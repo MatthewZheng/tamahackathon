@@ -4,7 +4,7 @@ import { useTama } from "@/lib/tama/store";
 const KEY_LABELS: Array<{ k: "A" | "B" | "C" }> = [{ k: "A" }, { k: "B" }, { k: "C" }];
 
 export function RetroDevice() {
-  const { state, dispatch } = useTama();
+  const { state, dispatch, sendQuickAnswer } = useTama();
   const { currentPrompt, spriteState, consent } = state;
 
   const lastPocket = [...state.conversation].reverse().find((m) => m.from === "pocket");
@@ -71,13 +71,7 @@ export function RetroDevice() {
         {KEY_LABELS.map(({ k }, i) => (
           <button
             key={k}
-            onClick={() =>
-              dispatch({
-                type: "quickAnswer",
-                key: k,
-                label: currentPrompt.options[i],
-              })
-            }
+            onClick={() => sendQuickAnswer(k, currentPrompt.options[i])}
             className="physical-button active:physical-button-pressed group flex h-14 items-center justify-center rounded-full font-bold text-charcoal/80"
             aria-label={`Answer ${k}: ${currentPrompt.options[i]}`}
           >

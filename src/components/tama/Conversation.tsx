@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useTama } from "@/lib/tama/store";
 
 export function Conversation() {
-  const { state, dispatch } = useTama();
+  const { state, dispatch, sendSayMore } = useTama();
   const [draft, setDraft] = useState("");
   const [showActivity, setShowActivity] = useState(false);
 
@@ -55,7 +55,7 @@ export function Conversation() {
             <button
               onClick={() => {
                 if (draft.trim()) {
-                  dispatch({ type: "sayMore", text: draft.trim() });
+                  sendSayMore(draft.trim());
                   setDraft("");
                 }
               }}

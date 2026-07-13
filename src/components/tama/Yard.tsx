@@ -4,7 +4,7 @@ import { PanelShell } from "./MemoryPanel";
 import { petSignalService } from "@/lib/tama/services";
 
 export function Yard({ onClose }: { onClose: () => void }) {
-  const { state, dispatch } = useTama();
+  const { state, dispatch, sendPetSignal, sendNudgeToFriend, markRealCheckin, declineNudge } = useTama();
   const friendMsgToJamie = state.petSignal
     ? petSignalService.translateForFriend(state.petSignal, state.userName.toLowerCase())
     : null;
@@ -31,10 +31,10 @@ export function Yard({ onClose }: { onClose: () => void }) {
             <p className="text-sm italic text-charcoal/60">no signal sent.</p>
           )}
           <button
-            onClick={() => dispatch({ type: "sendPetSignal" })}
+            onClick={sendPetSignal}
             className="mt-2 rounded-full bg-orchid px-3 py-1 text-xs font-medium text-cream"
           >
-            simulate pocket → biscuit
+            pocket → biscuit
           </button>
         </div>
 
@@ -64,10 +64,10 @@ export function Yard({ onClose }: { onClose: () => void }) {
             </div>
             {!state.friendNudge && (
               <button
-                onClick={() => dispatch({ type: "receiveFriendNudge" })}
+                onClick={sendNudgeToFriend}
                 className="rounded-full border border-charcoal/15 px-3 py-1 text-xs"
               >
-                simulate nudge
+                nudge {state.friendName.toLowerCase()}
               </button>
             )}
           </div>
@@ -89,13 +89,13 @@ export function Yard({ onClose }: { onClose: () => void }) {
                   copy message
                 </button>
                 <button
-                  onClick={() => dispatch({ type: "markRealCheckin" })}
+                  onClick={markRealCheckin}
                   className="rounded-full bg-lime px-3 py-1 text-xs font-medium text-charcoal"
                 >
                   mark real-life check-in complete
                 </button>
                 <button
-                  onClick={() => dispatch({ type: "declineNudge" })}
+                  onClick={declineNudge}
                   className="rounded-full px-3 py-1 text-xs text-charcoal/60"
                 >
                   decline

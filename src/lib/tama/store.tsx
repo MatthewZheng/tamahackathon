@@ -36,6 +36,8 @@ import { storageService } from "./storageService";
 import { infer, type InferInput } from "./wellbeingInferenceService";
 import { detectCrisis } from "./crisisDetectionService";
 import { petSignalService } from "./services";
+import { callPetBrain, type BrainResult } from "./petBrainService";
+import { socialService, type RemoteNudge } from "./socialService";
 import {
   addInference,
   confirmInference as confirmInf,
@@ -124,8 +126,9 @@ const INITIAL_STATE: TamaState = {
 // ---------- Actions ----------
 type Action =
   | { type: "hydrate"; state: TamaState }
-  | { type: "quickAnswer"; key: "A" | "B" | "C"; label: string }
-  | { type: "sayMore"; text: string }
+  | { type: "quickAnswer"; key: "A" | "B" | "C"; label: string; replyId?: string }
+  | { type: "sayMore"; text: string; replyId?: string }
+  | { type: "applyBrainReply"; messageId: string; result: BrainResult }
   | { type: "skipSayMore" }
   | { type: "advancePrompt" }
   | { type: "activityFeedback"; feedback: "yes" | "no" | "other" }
@@ -145,7 +148,7 @@ type Action =
   | { type: "skipDays"; days: number }
   | { type: "seedWeek" }
   | { type: "sendPetSignal" }
-  | { type: "receiveFriendNudge" }
+  | { type: "receiveFriendNudge"; text?: string; remoteId?: string }
   | { type: "markRealCheckin" }
   | { type: "declineNudge" }
   | { type: "addPositiveMemory"; kind: string; note: string }
@@ -166,10 +169,15 @@ function applyDelta(w: WellbeingState, d: { restDelta: number; bodyDelta: number
   };
 }
 
-function pushMsg(list: ConversationMessage[], from: "pocket" | "user", text: string): ConversationMessage[] {
+function pushMsg(
+  list: ConversationMessage[],
+  from: "pocket" | "user",
+  text: string,
+  id?: string,
+): ConversationMessage[] {
   return [
     ...list,
-    { id: `m_${Math.random().toString(36).slice(2, 8)}`, from, text, at: new Date().toISOString() },
+    { id: id ?? `m_${Math.random().toString(36).slice(2, 8)}`, from, text, at: new Date().toISOString() },
   ].slice(-40);
 }
 
@@ -195,7 +203,7 @@ function reducer(state: TamaState, action: Action): TamaState {
         };
       }
       let convo = pushMsg(state.conversation, "user", action.label);
-      convo = pushMsg(convo, "pocket", result.reply);
+      convo = pushMsg(convo, "pocket", result.reply, action.replyId);
       const nextMemory = state.consent.memoryEnabled
         ? [...result.proposedInferences, ...state.memory]
         : state.memory;
@@ -231,7 +239,7 @@ function reducer(state: TamaState, action: Action): TamaState {
         freeText: action.text,
       });
       let convo = pushMsg(state.conversation, "user", action.text);
-      convo = pushMsg(convo, "pocket", result.reply);
+      convo = pushMsg(convo, "pocket", result.reply, action.replyId);
       const nextMemory = state.consent.memoryEnabled
         ? [...result.proposedInferences, ...state.memory]
         : state.memory;
@@ -460,8 +468,8 @@ function reducer(state: TamaState, action: Action): TamaState {
 
     case "receiveFriendNudge": {
       const nudge: FriendNudge = {
-        id: `nudge_${Math.random().toString(36).slice(2, 8)}`,
-        text: "thinking of you 👋",
+        id: action.remoteId ?? `nudge_${Math.random().toString(36).slice(2, 8)}`,
+        text: action.text ?? "thinking of you 👋",
         at: new Date().toISOString(),
         resolved: false,
       };
@@ -539,6 +547,52 @@ function reducer(state: TamaState, action: Action): TamaState {
     case "acceptPendingInferences":
       return { ...state, pendingInferences: [] };
 
+    case "applyBrainReply": {
+      const { result } = action;
+      const msgExists = state.conversation.some((m) => m.id === action.messageId);
+      if (!msgExists) return state;
+
+      if (result.crisisFlag && !state.crisis.active) {
+        return {
+          ...state,
+          crisis: { active: true, triggeredAt: new Date().toISOString() },
+          spriteState: "low",
+        };
+      }
+
+      const brainInferences: CompanionInference[] = result.proposedInferences.map((p) => ({
+        id: `inf_${Math.random().toString(36).slice(2, 10)}`,
+        category: p.category,
+        statement: p.statement,
+        sourceText: "pocket (claude)",
+        sourceDate: new Date().toISOString(),
+        confidence: p.confidence,
+        userConfirmed: false,
+        userCorrected: false,
+        isActive: true,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }));
+
+      return {
+        ...state,
+        conversation: state.conversation.map((m) =>
+          m.id === action.messageId ? { ...m, text: result.reply } : m,
+        ),
+        wellbeing: applyDelta(state.wellbeing, {
+          restDelta: result.restDelta,
+          bodyDelta: result.bodyDelta,
+          sparkDelta: result.sparkDelta,
+        }),
+        spriteState: result.spriteState,
+        pendingRecommendation: result.recommendation === "none" ? state.pendingRecommendation : result.recommendation,
+        memory:
+          state.consent.memoryEnabled && brainInferences.length
+            ? [...brainInferences, ...state.memory]
+            : state.memory,
+      };
+    }
+
     default:
       return state;
   }
@@ -549,6 +603,12 @@ type Ctx = {
   state: TamaState;
   dispatch: React.Dispatch<Action>;
   exportMemory: () => string;
+  sendQuickAnswer: (key: "A" | "B" | "C", label: string) => void;
+  sendSayMore: (text: string) => void;
+  sendPetSignal: () => void;
+  sendNudgeToFriend: () => void;
+  markRealCheckin: () => void;
+  declineNudge: () => void;
 };
 const TamaContext = createContext<Ctx | null>(null);
 
@@ -599,9 +659,82 @@ export function TamaProvider({ children }: { children: ReactNode }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [state.panel]);
 
+  // Real-time: a nudge sent from the other browser tab (?user=jamie) lands here live.
+  useEffect(() => {
+    const unsubscribe = socialService.subscribeToIncomingNudges((n: RemoteNudge) => {
+      dispatch({ type: "receiveFriendNudge", text: n.text, remoteId: n.id });
+    });
+    return unsubscribe;
+  }, []);
+
   const exportMemory = useCallback(() => exportMemoryJSON(state.memory), [state.memory]);
 
-  const value = useMemo(() => ({ state, dispatch, exportMemory }), [state, exportMemory]);
+  const sendPetSignal = useCallback(() => {
+    dispatch({ type: "sendPetSignal" });
+    void socialService.sendPetSignal("quiet_spark", "pocket has been a bit quiet.");
+  }, []);
+
+  const sendNudgeToFriend = useCallback(() => {
+    void socialService.sendNudge().then((remote) => {
+      // No second tab / Supabase not configured: fall back to the local self-demo.
+      if (!remote) dispatch({ type: "receiveFriendNudge" });
+    });
+  }, []);
+
+  const markRealCheckin = useCallback(() => {
+    const id = state.friendNudge?.id;
+    dispatch({ type: "markRealCheckin" });
+    if (id && !id.startsWith("nudge_")) void socialService.resolveNudge(id);
+  }, [state.friendNudge]);
+
+  const declineNudge = useCallback(() => {
+    const id = state.friendNudge?.id;
+    dispatch({ type: "declineNudge" });
+    if (id && !id.startsWith("nudge_")) void socialService.resolveNudge(id);
+  }, [state.friendNudge]);
+
+  // Instant local reply first (dispatch below), then upgrade it in place if the
+  // real Claude-backed brain answers before the user moves on. Never blocks.
+  const sendQuickAnswer = useCallback(
+    (key: "A" | "B" | "C", label: string) => {
+      const replyId = `m_${Math.random().toString(36).slice(2, 8)}`;
+      const recentMessages = state.conversation;
+      dispatch({ type: "quickAnswer", key, label, replyId });
+      void callPetBrain({ quickLabel: label, recentMessages }).then((result) => {
+        if (result) dispatch({ type: "applyBrainReply", messageId: replyId, result });
+      });
+    },
+    [state.conversation],
+  );
+
+  const sendSayMore = useCallback(
+    (text: string) => {
+      if (!text.trim()) return;
+      const replyId = `m_${Math.random().toString(36).slice(2, 8)}`;
+      const recentMessages = state.conversation;
+      const quickLabel = state.lastQuick?.label ?? null;
+      dispatch({ type: "sayMore", text, replyId });
+      void callPetBrain({ quickLabel, freeText: text, recentMessages }).then((result) => {
+        if (result) dispatch({ type: "applyBrainReply", messageId: replyId, result });
+      });
+    },
+    [state.conversation, state.lastQuick],
+  );
+
+  const value = useMemo(
+    () => ({
+      state,
+      dispatch,
+      exportMemory,
+      sendQuickAnswer,
+      sendSayMore,
+      sendPetSignal,
+      sendNudgeToFriend,
+      markRealCheckin,
+      declineNudge,
+    }),
+    [state, exportMemory, sendQuickAnswer, sendSayMore, sendPetSignal, sendNudgeToFriend, markRealCheckin, declineNudge],
+  );
   return <TamaContext.Provider value={value}>{children}</TamaContext.Provider>;
 }
 

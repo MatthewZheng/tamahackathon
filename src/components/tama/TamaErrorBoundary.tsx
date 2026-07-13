@@ -12,11 +12,19 @@ export class TamaErrorBoundary extends Component<{ children: ReactNode }, State>
   }
   render() {
     if (this.state.hasError) {
+      let petName = "pocket";
+      try {
+        const raw = typeof window !== "undefined" ? window.localStorage.getItem("tama.state.v1") : null;
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed?.petName) petName = String(parsed.petName).toLowerCase();
+        }
+      } catch {}
       return (
         <div className="flex min-h-screen items-center justify-center bg-cream p-6">
           <div className="max-w-md rounded-2xl border border-charcoal/10 bg-white p-6 text-center shadow-lg">
             <h2 className="text-lg font-semibold text-charcoal">
-              pocket is having a quiet moment.
+              {petName} is having a quiet moment.
             </h2>
             <p className="mt-2 text-sm text-charcoal/70">
               nothing broke while you were gone. try reloading — your local data is safe.

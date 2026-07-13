@@ -21,7 +21,9 @@ import type {
   PositiveMemory,
   Prompt,
   SpriteState,
+  VisitState,
   WellbeingState,
+  YardLogEntry,
 } from "./types";
 import {
   DEFAULT_WELLBEING,
@@ -33,11 +35,11 @@ import {
   USER_NAME,
 } from "./constants";
 import { storageService } from "./storageService";
-import { infer, type InferInput } from "./wellbeingInferenceService";
-import { detectCrisis } from "./crisisDetectionService";
+
+import { detectCrisis, detectConcern } from "./crisisDetectionService";
+import { getPocketReply } from "./pocketReplyService";
+import type { InferenceResult } from "./types";
 import { petSignalService } from "./services";
-import { callPetBrain, type BrainResult } from "./petBrainService";
-import { socialService, type RemoteNudge } from "./socialService";
 import {
   addInference,
   confirmInference as confirmInf,
@@ -49,14 +51,27 @@ import {
 } from "./companionMemoryService";
 
 // ---------- State ----------
-export type Panel = "memory" | "settings" | "yard" | null;
+export type Panel = "memory" | "settings" | null;
+export type ScreenView = "chat" | "yard";
 export type Activity = "breathe" | "sit" | "water" | null;
+
+export type SpriteTint = "default" | "peach" | "mint" | "lilac";
+export type SpriteSpecies = "blob" | "cat" | "dog" | "bunny";
+export type ShellTheme = "classic" | "midnight" | "blossom" | "moss";
+export type OverlayShape = "shell" | "round" | "egg";
+export type OverlaySize = "s" | "m" | "l";
 
 export type TamaState = {
   userName: string;
   petName: string;
   friendName: string;
   friendPetName: string;
+  spriteTint: SpriteTint;
+  spriteSpecies: SpriteSpecies;
+  shellTheme: ShellTheme;
+  overlayShape: OverlayShape;
+  overlaySize: OverlaySize;
+  onboarded: boolean;
   wellbeing: WellbeingState;
   spriteState: SpriteState;
   conversation: ConversationMessage[];
@@ -69,16 +84,31 @@ export type TamaState = {
   overlayState: OverlayState;
   overlayCorner: OverlayCorner;
   panel: Panel;
+  screenView: ScreenView;
   consent: ConsentSettings;
   lastVisit: string; // ISO
   simulatedDaysAway: number;
   friendNudge: FriendNudge | null;
   petSignal: PetSignal | null;
+  visiting: VisitState | null;
+  yardLog: YardLogEntry[];
   positiveMemories: PositiveMemory[];
   activityOutcomes: ActivityOutcome[];
   returnFlowActive: boolean;
   pendingRecommendation: string | null;
   pendingInferences: CompanionInference[];
+  thinking: boolean;
+  crisisDemoPreview: boolean;
+  lastReplySource: "nebius" | "lovable" | "local" | null;
+  lastNudgeTransport: "local" | "band" | "insforge" | null;
+  account: { userId: string | null; email: string | null };
+  pairedFriend: { id: string; userName: string; petName: string; spriteTint: string } | null;
+  bond: number;
+  evolutionStage: 1 | 2 | 3;
+  celebratedStages: number[];
+  pendingEvolutionMoment: 2 | 3 | null;
+  bondTurnDay: string;
+  bondTurnCount: number;
 };
 
 const INITIAL_STATE: TamaState = {
@@ -86,13 +116,25 @@ const INITIAL_STATE: TamaState = {
   petName: PET_NAME,
   friendName: FRIEND_NAME,
   friendPetName: FRIEND_PET_NAME,
+  spriteTint: "default",
+  spriteSpecies: "blob",
+  shellTheme: "classic",
+  overlayShape: "shell",
+  overlaySize: "m",
+  onboarded: false,
   wellbeing: DEFAULT_WELLBEING,
   spriteState: "idle",
   conversation: [
     {
       id: "m0",
       from: "pocket",
-      text: `hi. i'm ${PET_NAME.toLowerCase()}. small check-in?`,
+      text: `hi. i'm ${PET_NAME.toLowerCase()}.`,
+      at: new Date().toISOString(),
+    },
+    {
+      id: "m1",
+      from: "pocket",
+      text: PROMPTS[0].question,
       at: new Date().toISOString(),
     },
   ],
@@ -105,6 +147,7 @@ const INITIAL_STATE: TamaState = {
   overlayState: "expanded",
   overlayCorner: "br",
   panel: null,
+  screenView: "chat",
   consent: {
     memoryEnabled: true,
     petSignalsEnabled: true,
@@ -116,25 +159,39 @@ const INITIAL_STATE: TamaState = {
   simulatedDaysAway: 0,
   friendNudge: null,
   petSignal: null,
+  visiting: null,
+  yardLog: [],
   positiveMemories: [],
   activityOutcomes: [],
   returnFlowActive: false,
   pendingRecommendation: null,
   pendingInferences: [],
+  thinking: false,
+  crisisDemoPreview: false,
+  lastReplySource: null,
+  lastNudgeTransport: null,
+  account: { userId: null, email: null },
+  pairedFriend: null,
+  bond: 0,
+  evolutionStage: 1,
+  celebratedStages: [],
+  pendingEvolutionMoment: null,
+  bondTurnDay: "",
+  bondTurnCount: 0,
 };
 
 // ---------- Actions ----------
 type Action =
   | { type: "hydrate"; state: TamaState }
-  | { type: "quickAnswer"; key: "A" | "B" | "C"; label: string; replyId?: string }
-  | { type: "sayMore"; text: string; replyId?: string }
-  | { type: "applyBrainReply"; messageId: string; result: BrainResult }
+  | { type: "quickAnswer"; key: "A" | "B" | "C"; label: string }
+  | { type: "sayMore"; text: string }
   | { type: "skipSayMore" }
   | { type: "advancePrompt" }
   | { type: "activityFeedback"; feedback: "yes" | "no" | "other" }
   | { type: "openActivity"; activity: Activity }
   | { type: "closeActivity" }
   | { type: "setPanel"; panel: Panel }
+  | { type: "setScreenView"; view: ScreenView }
   | { type: "setOverlay"; overlay: OverlayState }
   | { type: "setCorner"; corner: OverlayCorner }
   | { type: "editMemory"; id: string; statement: string }
@@ -145,10 +202,12 @@ type Action =
   | { type: "toggleConsent"; key: keyof ConsentSettings }
   | { type: "triggerCrisis" }
   | { type: "clearCrisis" }
+  | { type: "openCrisisDemo" }
   | { type: "skipDays"; days: number }
   | { type: "seedWeek" }
-  | { type: "sendPetSignal" }
-  | { type: "receiveFriendNudge"; text?: string; remoteId?: string }
+  | { type: "sendPetSignal"; kind: "nudge" | "hello" }
+  | { type: "goVisit" }
+  | { type: "endVisit" }
   | { type: "markRealCheckin" }
   | { type: "declineNudge" }
   | { type: "addPositiveMemory"; kind: string; note: string }
@@ -156,7 +215,39 @@ type Action =
   | { type: "setSprite"; sprite: SpriteState }
   | { type: "resetAll" }
   | { type: "acceptPendingInferences" }
-  | { type: "resetDemo" };
+  | { type: "resetDemo" }
+  | {
+      type: "_beginTurn";
+      userText: string;
+      quick: { key: "A" | "B" | "C"; label: string } | null;
+      isFreeText: boolean;
+    }
+  | { type: "_applyReply"; result: InferenceResult; isFreeText: boolean; source: "nebius" | "lovable" | "local" }
+  | { type: "_beginConcern"; userText: string }
+  | {
+      type: "completeOnboarding";
+      userName: string;
+      petName: string;
+      spriteTint: SpriteTint;
+      spriteSpecies?: SpriteSpecies;
+      shellTheme?: ShellTheme;
+      overlayShape?: OverlayShape;
+      overlaySize?: OverlaySize;
+    }
+  | { type: "setAppearance"; patch: Partial<Pick<TamaState, "spriteTint" | "spriteSpecies" | "shellTheme" | "overlayShape" | "overlaySize">> }
+  | { type: "setAccount"; userId: string | null; email: string | null }
+  | { type: "setPairedFriend"; friend: TamaState["pairedFriend"] }
+  | { type: "applyServerHydrate"; patch: Partial<TamaState> }
+  | {
+      type: "receiveExternalNudge";
+      text: string;
+      kind?: "nudge" | "hello" | "visit" | "leave";
+      via?: "local" | "band" | "insforge";
+    }
+  | { type: "setNudgeTransport"; via: "local" | "band" | "insforge" | null }
+  | { type: "bondBump"; amount: number }
+  | { type: "setEvolutionStage"; stage: 1 | 2 | 3 }
+  | { type: "replayEvolutionMoment"; stage: 2 | 3 };
 
 function clamp(n: number, lo = 0, hi = 100) {
   return Math.max(lo, Math.min(hi, n));
@@ -169,16 +260,23 @@ function applyDelta(w: WellbeingState, d: { restDelta: number; bodyDelta: number
   };
 }
 
-function pushMsg(
-  list: ConversationMessage[],
-  from: "pocket" | "user",
-  text: string,
-  id?: string,
-): ConversationMessage[] {
+function pushMsg(list: ConversationMessage[], from: "pocket" | "user", text: string): ConversationMessage[] {
   return [
     ...list,
-    { id: id ?? `m_${Math.random().toString(36).slice(2, 8)}`, from, text, at: new Date().toISOString() },
+    { id: `m_${Math.random().toString(36).slice(2, 8)}`, from, text, at: new Date().toISOString() },
   ].slice(-40);
+}
+
+function pushYardLog(
+  list: YardLogEntry[],
+  from: "me" | "friend",
+  kind: "nudge" | "hello",
+  text: string,
+): YardLogEntry[] {
+  return [
+    ...list,
+    { id: `yl_${Math.random().toString(36).slice(2, 8)}`, from, kind, text, at: new Date().toISOString() },
+  ].slice(-20);
 }
 
 function pickPromptAvoiding(currentId: string): Prompt {
@@ -186,74 +284,145 @@ function pickPromptAvoiding(currentId: string): Prompt {
   return others[Math.floor(Math.random() * others.length)];
 }
 
+const STAGE_LINES: Record<2 | 3, string> = {
+  2: "i think i grew a little. it's because of us.",
+  3: "look. something bloomed. i'm keeping it.",
+};
+
+function stageFromBond(bond: number): 1 | 2 | 3 {
+  if (bond >= 70) return 3;
+  if (bond >= 25) return 2;
+  return 1;
+}
+
+// Bond only ever grows. Never subtract.
+function applyBondGain(state: TamaState, gain: number): TamaState {
+  const amount = Math.max(0, gain);
+  const bond = state.bond + amount;
+  const target = Math.max(state.evolutionStage, stageFromBond(bond)) as 1 | 2 | 3;
+  if (target === state.evolutionStage || state.celebratedStages.includes(target)) {
+    return { ...state, bond, evolutionStage: target };
+  }
+  // Crossing a threshold — defer if crisis is active.
+  if (state.crisis.active) {
+    return {
+      ...state,
+      bond,
+      evolutionStage: target,
+      pendingEvolutionMoment: target as 2 | 3,
+    };
+  }
+  return {
+    ...state,
+    bond,
+    evolutionStage: target,
+    spriteState: state.consent.reducedMotion ? state.spriteState : "celebrating",
+    conversation: pushMsg(state.conversation, "pocket", STAGE_LINES[target as 2 | 3]),
+    celebratedStages: [...state.celebratedStages, target],
+    pendingEvolutionMoment: null,
+  };
+}
+
+function applyTurnBond(state: TamaState): TamaState {
+  const today = new Date().toISOString().slice(0, 10);
+  const count = state.bondTurnDay === today ? state.bondTurnCount : 0;
+  if (count >= 3) return { ...state, bondTurnDay: today, bondTurnCount: count };
+  const next = applyBondGain(state, 1);
+  return { ...next, bondTurnDay: today, bondTurnCount: count + 1 };
+}
+
 function reducer(state: TamaState, action: Action): TamaState {
   switch (action.type) {
     case "hydrate":
       return action.state;
 
-    case "quickAnswer": {
-      const input: InferInput = { quick: action.key, quickLabel: action.label };
-      const result = infer(input);
-      if (result.crisisFlag) {
+    case "_beginTurn": {
+      // Sync pre-crisis check on raw user text
+      if (detectCrisis(action.userText)) {
         return {
           ...state,
-          conversation: pushMsg(state.conversation, "user", action.label),
-          crisis: { active: true, triggeredAt: new Date().toISOString() },
-          spriteState: "low",
-        };
-      }
-      let convo = pushMsg(state.conversation, "user", action.label);
-      convo = pushMsg(convo, "pocket", result.reply, action.replyId);
-      const nextMemory = state.consent.memoryEnabled
-        ? [...result.proposedInferences, ...state.memory]
-        : state.memory;
-      return {
-        ...state,
-        lastQuick: { key: action.key, label: action.label },
-        showSayMore: true,
-        conversation: convo,
-        wellbeing: applyDelta(state.wellbeing, result.inferred),
-        spriteState: result.spriteState,
-        pendingRecommendation: result.recommendation,
-        memory: nextMemory,
-        pendingInferences: result.proposedInferences,
-        returnFlowActive: false,
-      };
-    }
-
-    case "sayMore": {
-      if (!action.text.trim()) return state;
-      const crisisFlag = detectCrisis(action.text);
-      if (crisisFlag) {
-        return {
-          ...state,
-          conversation: pushMsg(state.conversation, "user", action.text),
+          conversation: pushMsg(state.conversation, "user", action.userText),
           crisis: { active: true, triggeredAt: new Date().toISOString() },
           spriteState: "low",
           showSayMore: false,
+          thinking: false,
         };
       }
-      const result = infer({
-        quick: state.lastQuick?.key ?? null,
-        quickLabel: state.lastQuick?.label ?? null,
-        freeText: action.text,
-      });
-      let convo = pushMsg(state.conversation, "user", action.text);
-      convo = pushMsg(convo, "pocket", result.reply, action.replyId);
-      const nextMemory = state.consent.memoryEnabled
+      return {
+        ...state,
+        conversation: pushMsg(state.conversation, "user", action.userText),
+        lastQuick: action.quick ?? state.lastQuick,
+        showSayMore: false,
+        thinking: true,
+      };
+    }
+
+    case "_applyReply": {
+      const result = action.result;
+      if (result.crisisFlag) {
+        return {
+          ...state,
+          crisis: { active: true, triggeredAt: new Date().toISOString() },
+          spriteState: "low",
+          thinking: false,
+          showSayMore: false,
+          lastReplySource: action.source,
+        };
+      }
+      const convo = pushMsg(state.conversation, "pocket", result.reply);
+      // memory off: nothing sent, nothing proposed, nothing shown.
+      const memoryOn = state.consent.memoryEnabled;
+      const proposed = memoryOn ? result.proposedInferences : [];
+      const nextMemory = memoryOn
         ? [...result.proposedInferences, ...state.memory]
         : state.memory;
-      return {
+      // AI's follow-up options become the visible chips. On the local
+      // fallback we keep the prior prompt so quick-reply chips stay stable.
+      const nextPrompt =
+        action.source === "local"
+          ? state.currentPrompt
+          : {
+              id: `ai_${Math.random().toString(36).slice(2, 8)}`,
+              question: result.reply,
+              options: result.options,
+            };
+      const next: TamaState = {
         ...state,
         conversation: convo,
         wellbeing: applyDelta(state.wellbeing, result.inferred),
         spriteState: result.spriteState,
         pendingRecommendation: result.recommendation ?? state.pendingRecommendation,
         memory: nextMemory,
+        pendingInferences: proposed,
+        currentPrompt: nextPrompt,
+        showSayMore: action.isFreeText ? false : true,
+        thinking: false,
+        returnFlowActive: false,
+        lastReplySource: action.source,
+      };
+      return applyTurnBond(next);
+    }
+
+    case "_beginConcern": {
+      const withUser = pushMsg(state.conversation, "user", action.userText);
+      const CONCERN_LINE =
+        "did you get hurt, or is this something heavier? i'm here either way.";
+      const withPocket = pushMsg(withUser, "pocket", CONCERN_LINE);
+      return {
+        ...state,
+        conversation: withPocket,
+        currentPrompt: {
+          id: "concern",
+          question: CONCERN_LINE,
+          options: ["just an accident", "i'm struggling", "come back to this"],
+        },
         showSayMore: false,
-        pendingInferences: result.proposedInferences,
+        thinking: false,
+        lastQuick: null,
       };
     }
+
+
 
     case "skipSayMore":
       return { ...state, showSayMore: false };
@@ -308,7 +477,7 @@ function reducer(state: TamaState, action: Action): TamaState {
               updatedAt: new Date().toISOString(),
             }
           : null;
-      return {
+      const afterActivity: TamaState = {
         ...state,
         activityOutcomes: [outcome, ...state.activityOutcomes],
         wellbeing: {
@@ -321,10 +490,14 @@ function reducer(state: TamaState, action: Action): TamaState {
         overlayState: "expanded",
         spriteState: action.feedback === "yes" ? "perked" : state.spriteState,
       };
+      return action.feedback === "yes" ? applyBondGain(afterActivity, 2) : afterActivity;
     }
 
     case "setPanel":
       return { ...state, panel: action.panel };
+
+    case "setScreenView":
+      return { ...state, screenView: action.view };
 
     case "setOverlay":
       return { ...state, overlayState: action.overlay };
@@ -342,7 +515,11 @@ function reducer(state: TamaState, action: Action): TamaState {
       return { ...state, memory: rejectInf(state.memory, action.id) };
 
     case "confirmMemory":
-      return { ...state, memory: confirmInf(state.memory, action.id) };
+      return applyBondGain(
+        { ...state, memory: confirmInf(state.memory, action.id) },
+        3,
+      );
+
 
     case "wipeMemory":
       return { ...state, memory: deleteAllInferences() };
@@ -356,44 +533,48 @@ function reducer(state: TamaState, action: Action): TamaState {
     case "triggerCrisis":
       return { ...state, crisis: { active: true, triggeredAt: new Date().toISOString() } };
 
-    case "clearCrisis":
-      return { ...state, crisis: { active: false, triggeredAt: null } };
+    case "openCrisisDemo":
+      return {
+        ...state,
+        crisis: { active: true, triggeredAt: new Date().toISOString() },
+        crisisDemoPreview: true,
+      };
+
+    case "clearCrisis": {
+      const cleared: TamaState = {
+        ...state,
+        crisis: { active: false, triggeredAt: null },
+        crisisDemoPreview: false,
+      };
+      // Deferred evolution moment — play it now.
+      const pending = cleared.pendingEvolutionMoment;
+      if (pending && !cleared.celebratedStages.includes(pending)) {
+        return {
+          ...cleared,
+          spriteState: cleared.consent.reducedMotion ? cleared.spriteState : "celebrating",
+          conversation: pushMsg(cleared.conversation, "pocket", STAGE_LINES[pending]),
+          celebratedStages: [...cleared.celebratedStages, pending],
+          pendingEvolutionMoment: null,
+        };
+      }
+      return cleared;
+    }
+
 
     case "skipDays": {
       const days = action.days;
-      // Gentle drift: rest & body drift toward center, spark dips a little
-      const w = state.wellbeing;
-      const drift = (v: number, target: number) => v + (target - v) * 0.25;
-      const wellbeing = {
-        rest: clamp(drift(w.rest, 50) - days * 1),
-        body: clamp(drift(w.body, 48) - days * 1),
-        spark: clamp(drift(w.spark, 40) - days * 2),
-      };
-      const inf: CompanionInference = {
-        id: `inf_${Math.random().toString(36).slice(2, 8)}`,
-        category: "absence",
-        statement: `you were away for ${days} day${days > 1 ? "s" : ""}. no catching up required.`,
-        sourceText: `simulated absence`,
-        sourceDate: new Date().toISOString(),
-        confidence: "high",
-        userConfirmed: false,
-        userCorrected: false,
-        isActive: true,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
+      // Ethical rule: absence changes presentation only — no meter drift,
+      // no memory entry, no distressed sprite. Pocket just went sleepy.
       const convo = pushMsg(state.conversation, "pocket", RETURN_PROMPT.question);
       return {
         ...state,
-        wellbeing,
-        spriteState: "low",
+        spriteState: "sleepy",
         simulatedDaysAway: state.simulatedDaysAway + days,
         currentPrompt: RETURN_PROMPT,
         conversation: convo,
         returnFlowActive: true,
         showSayMore: false,
         lastQuick: null,
-        memory: state.consent.memoryEnabled ? addInference(state.memory, inf) : state.memory,
       };
     }
 
@@ -462,19 +643,29 @@ function reducer(state: TamaState, action: Action): TamaState {
     }
 
     case "sendPetSignal": {
-      const sig = petSignalService.buildSignal("quiet_spark");
-      return { ...state, petSignal: sig };
+      if (!state.consent.petSignalsEnabled) return state;
+      const sig = petSignalService.buildSignal(action.kind, state.petName);
+      // The bubble shows the actual text that crosses the wire (what the
+      // friend will see), not the self-facing preview text in `petSignal`.
+      const wireText = petSignalService.translateForFriend(action.kind, state.userName);
+      return {
+        ...state,
+        petSignal: sig,
+        yardLog: pushYardLog(state.yardLog, "me", action.kind, wireText),
+      };
     }
 
-    case "receiveFriendNudge": {
-      const nudge: FriendNudge = {
-        id: action.remoteId ?? `nudge_${Math.random().toString(36).slice(2, 8)}`,
-        text: action.text ?? "thinking of you 👋",
-        at: new Date().toISOString(),
-        resolved: false,
+    case "goVisit": {
+      if (!state.consent.petSignalsEnabled) return state;
+      return {
+        ...state,
+        visiting: { direction: "outgoing", at: new Date().toISOString() },
+        screenView: "yard",
       };
-      return { ...state, friendNudge: nudge, panel: "yard" };
     }
+
+    case "endVisit":
+      return { ...state, visiting: null };
 
     case "markRealCheckin": {
       const inf: CompanionInference = {
@@ -526,12 +717,15 @@ function reducer(state: TamaState, action: Action): TamaState {
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
-      return {
-        ...state,
-        positiveMemories: [pm, ...state.positiveMemories],
-        memory: state.consent.memoryEnabled ? addInference(state.memory, inf) : state.memory,
-        spriteState: "celebrating",
-      };
+      return applyBondGain(
+        {
+          ...state,
+          positiveMemories: [pm, ...state.positiveMemories],
+          memory: state.consent.memoryEnabled ? addInference(state.memory, inf) : state.memory,
+          spriteState: "celebrating",
+        },
+        2,
+      );
     }
 
     case "setMeters":
@@ -547,51 +741,112 @@ function reducer(state: TamaState, action: Action): TamaState {
     case "acceptPendingInferences":
       return { ...state, pendingInferences: [] };
 
-    case "applyBrainReply": {
-      const { result } = action;
-      const msgExists = state.conversation.some((m) => m.id === action.messageId);
-      if (!msgExists) return state;
-
-      if (result.crisisFlag && !state.crisis.active) {
-        return {
-          ...state,
-          crisis: { active: true, triggeredAt: new Date().toISOString() },
-          spriteState: "low",
-        };
-      }
-
-      const brainInferences: CompanionInference[] = result.proposedInferences.map((p) => ({
-        id: `inf_${Math.random().toString(36).slice(2, 10)}`,
-        category: p.category,
-        statement: p.statement,
-        sourceText: "pocket (claude)",
-        sourceDate: new Date().toISOString(),
-        confidence: p.confidence,
-        userConfirmed: false,
-        userCorrected: false,
-        isActive: true,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      }));
-
+    case "completeOnboarding": {
+      const cleanUser = action.userName.trim() || USER_NAME;
+      const cleanPet = action.petName.trim() || PET_NAME;
       return {
         ...state,
-        conversation: state.conversation.map((m) =>
-          m.id === action.messageId ? { ...m, text: result.reply } : m,
-        ),
-        wellbeing: applyDelta(state.wellbeing, {
-          restDelta: result.restDelta,
-          bodyDelta: result.bodyDelta,
-          sparkDelta: result.sparkDelta,
-        }),
-        spriteState: result.spriteState,
-        pendingRecommendation: result.recommendation === "none" ? state.pendingRecommendation : result.recommendation,
-        memory:
-          state.consent.memoryEnabled && brainInferences.length
-            ? [...brainInferences, ...state.memory]
-            : state.memory,
+        userName: cleanUser,
+        petName: cleanPet,
+        spriteTint: action.spriteTint,
+        spriteSpecies: action.spriteSpecies ?? state.spriteSpecies,
+        shellTheme: action.shellTheme ?? state.shellTheme,
+        overlayShape: action.overlayShape ?? state.overlayShape,
+        overlaySize: action.overlaySize ?? state.overlaySize,
+        onboarded: true,
+        conversation: [
+          {
+            id: "m0",
+            from: "pocket",
+            text: `hi ${cleanUser.toLowerCase()}. i'm ${cleanPet.toLowerCase()}.`,
+            at: new Date().toISOString(),
+          },
+          {
+            id: "m1",
+            from: "pocket",
+            text: PROMPTS[0].question,
+            at: new Date().toISOString(),
+          },
+        ],
       };
     }
+
+    case "setAppearance":
+      return { ...state, ...action.patch };
+
+
+    case "setAccount":
+      return { ...state, account: { userId: action.userId, email: action.email } };
+
+    case "setPairedFriend":
+      return {
+        ...state,
+        pairedFriend: action.friend,
+        friendName: action.friend?.userName ?? state.friendName,
+        friendPetName: action.friend?.petName ?? state.friendPetName,
+      };
+
+    case "applyServerHydrate":
+      return { ...state, ...action.patch };
+
+    case "receiveExternalNudge": {
+      if (!state.consent.petSignalsEnabled) return state;
+      const kind = action.kind ?? "nudge";
+      const lastNudgeTransport = action.via ?? state.lastNudgeTransport;
+      if (kind === "visit") {
+        return {
+          ...state,
+          visiting: { direction: "incoming", at: new Date().toISOString() },
+          screenView: "yard",
+          lastNudgeTransport,
+        };
+      }
+      if (kind === "leave") {
+        // Friend's pet headed home — clear it only if they were the one
+        // visiting us (don't touch an unrelated outgoing visit of ours).
+        return {
+          ...state,
+          visiting: state.visiting?.direction === "incoming" ? null : state.visiting,
+          lastNudgeTransport,
+        };
+      }
+      const nudge: FriendNudge = {
+        id: `nudge_${Math.random().toString(36).slice(2, 8)}`,
+        text: action.text,
+        at: new Date().toISOString(),
+        resolved: false,
+        kind,
+      };
+      return {
+        ...state,
+        friendNudge: nudge,
+        screenView: "yard",
+        yardLog: pushYardLog(state.yardLog, "friend", kind, action.text),
+        lastNudgeTransport,
+      };
+    }
+
+    case "setNudgeTransport":
+      return { ...state, lastNudgeTransport: action.via };
+
+    case "bondBump":
+      return applyBondGain(state, action.amount);
+
+    case "setEvolutionStage": {
+      // Bond only ever goes up. Clamp bond to at least the stage floor.
+      const floor = action.stage === 3 ? 70 : action.stage === 2 ? 25 : 0;
+      const bond = Math.max(state.bond, floor);
+      const nextStage = Math.max(state.evolutionStage, action.stage) as 1 | 2 | 3;
+      return { ...state, bond, evolutionStage: nextStage };
+    }
+
+    case "replayEvolutionMoment":
+      return {
+        ...state,
+        spriteState: state.consent.reducedMotion ? state.spriteState : "celebrating",
+        conversation: pushMsg(state.conversation, "pocket", STAGE_LINES[action.stage]),
+      };
+
 
     default:
       return state;
@@ -603,18 +858,133 @@ type Ctx = {
   state: TamaState;
   dispatch: React.Dispatch<Action>;
   exportMemory: () => string;
-  sendQuickAnswer: (key: "A" | "B" | "C", label: string) => void;
-  sendSayMore: (text: string) => void;
-  sendPetSignal: () => void;
-  sendNudgeToFriend: () => void;
-  markRealCheckin: () => void;
-  declineNudge: () => void;
 };
 const TamaContext = createContext<Ctx | null>(null);
 
 export function TamaProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(reducer, INITIAL_STATE);
   const hydrated = useRef(false);
+  const stateRef = useRef(state);
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
+
+  // Async wrapper: intercepts quickAnswer / sayMore to route through the LLM.
+  const wrappedDispatch = useCallback<React.Dispatch<Action>>((action) => {
+    if (action.type === "wipeMemory") {
+      dispatch(action);
+      void (async () => {
+        const { makeHydraProvider } = await import("./hydraMemoryProvider");
+        await makeHydraProvider(stateRef.current.account.userId).forgetAll();
+      })();
+      return;
+    }
+    if (action.type === "quickAnswer") {
+      const label = action.label;
+      // Concern branch: deterministic handling, no AI, no meter changes.
+      if (stateRef.current.currentPrompt.id === "concern") {
+        if (label === "i'm struggling") {
+          dispatch({ type: "triggerCrisis" });
+        } else {
+          dispatch({ type: "advancePrompt" });
+        }
+        return;
+      }
+      if (detectConcern(label)) {
+        dispatch({ type: "_beginConcern", userText: label });
+        return;
+      }
+      dispatch({
+        type: "_beginTurn",
+        userText: label,
+        quick: { key: action.key, label },
+        isFreeText: false,
+      });
+      const snap = stateRef.current;
+      if (detectCrisis(label)) return;
+      void (async () => {
+        let activeMemories: CompanionInference[] = [];
+        if (snap.consent.memoryEnabled) {
+          try {
+            const { makeHydraProvider, isHydraConfigured } = await import(
+              "./hydraMemoryProvider"
+            );
+            if (await isHydraConfigured()) {
+              activeMemories = await makeHydraProvider(
+                snap.account.userId,
+              ).retrieveRelevant(label);
+            }
+          } catch {
+            /* fall through to local */
+          }
+          if (!activeMemories.length) {
+            activeMemories = snap.memory.filter((m) => m.isActive);
+          }
+        }
+        const { result, source } = await getPocketReply(
+          { quick: action.key, quickLabel: label },
+          {
+            wellbeing: snap.wellbeing,
+            recentMessages: snap.conversation,
+            activeMemories,
+          },
+        );
+        dispatch({ type: "_applyReply", result, isFreeText: false, source });
+      })();
+      return;
+    }
+    if (action.type === "sayMore") {
+      const text = action.text.trim();
+      if (!text) return;
+      if (detectConcern(text)) {
+        dispatch({ type: "_beginConcern", userText: text });
+        return;
+      }
+      dispatch({
+        type: "_beginTurn",
+        userText: text,
+        quick: null,
+        isFreeText: true,
+      });
+      if (detectCrisis(text)) return;
+      const snap = stateRef.current;
+      void (async () => {
+        let activeMemories: CompanionInference[] = [];
+        if (snap.consent.memoryEnabled) {
+          try {
+            const { makeHydraProvider, isHydraConfigured } = await import(
+              "./hydraMemoryProvider"
+            );
+            if (await isHydraConfigured()) {
+              activeMemories = await makeHydraProvider(
+                snap.account.userId,
+              ).retrieveRelevant(text);
+            }
+          } catch {
+            /* fall through */
+          }
+          if (!activeMemories.length) {
+            activeMemories = snap.memory.filter((m) => m.isActive);
+          }
+        }
+        // The prior quick answer is already in recentMessages; don't
+        // double-count its meter signal on the free-text turn.
+        const { result, source } = await getPocketReply(
+          { quick: null, quickLabel: null, freeText: text },
+          {
+            wellbeing: snap.wellbeing,
+            recentMessages: snap.conversation,
+            activeMemories,
+          },
+        );
+        dispatch({ type: "_applyReply", result, isFreeText: true, source });
+      })();
+      return;
+    }
+    dispatch(action);
+  }, []);
+
+
 
   // Hydrate from localStorage once
   useEffect(() => {
@@ -622,118 +992,240 @@ export function TamaProvider({ children }: { children: ReactNode }) {
     hydrated.current = true;
     const loaded = storageService.load<TamaState>();
     if (loaded) {
-      // Handle return-after-absence: if last visit > 1 real day ago
+      // Existing saves predate onboarded/spriteTint — treat them as already-onboarded.
+      const backfilled: TamaState = {
+        ...loaded,
+        thinking: false,
+        onboarded: loaded.onboarded ?? true,
+        spriteTint: loaded.spriteTint ?? "default",
+        spriteSpecies: loaded.spriteSpecies ?? "blob",
+        shellTheme: loaded.shellTheme ?? "classic",
+        overlayShape: loaded.overlayShape ?? "shell",
+        overlaySize: loaded.overlaySize ?? "m",
+        bond: loaded.bond ?? 0,
+        evolutionStage: loaded.evolutionStage ?? 1,
+        celebratedStages: loaded.celebratedStages ?? [],
+        pendingEvolutionMoment: loaded.pendingEvolutionMoment ?? null,
+        bondTurnDay: loaded.bondTurnDay ?? "",
+        bondTurnCount: loaded.bondTurnCount ?? 0,
+        visiting: loaded.visiting ?? null,
+        screenView: "chat",
+        yardLog: loaded.yardLog ?? [],
+        // Old saves may carry the retired "yard" panel value.
+        panel: (loaded.panel as string) === "yard" ? null : loaded.panel,
+      };
       try {
         const last = new Date(loaded.lastVisit).getTime();
         const hoursAway = (Date.now() - last) / 36e5;
         if (hoursAway > 20) {
-          dispatch({ type: "hydrate", state: loaded });
-          setTimeout(() => dispatch({ type: "skipDays", days: Math.max(1, Math.floor(hoursAway / 24)) }), 300);
+          dispatch({ type: "hydrate", state: backfilled });
+          setTimeout(
+            () => dispatch({ type: "skipDays", days: Math.max(1, Math.floor(hoursAway / 24)) }),
+            300,
+          );
           return;
         }
       } catch {
         /* ignore */
       }
-      dispatch({ type: "hydrate", state: loaded });
+      dispatch({ type: "hydrate", state: backfilled });
     }
   }, []);
 
-  // Persist
   useEffect(() => {
     if (!hydrated.current) return;
-    storageService.save({ ...state, lastVisit: new Date().toISOString() });
+    storageService.save({ ...state, lastVisit: new Date().toISOString(), thinking: false });
   }, [state]);
 
-  // Hidden demo controls: Shift+D toggles panel
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (e.shiftKey && (e.key === "D" || e.key === "d")) {
         e.preventDefault();
         dispatch({
           type: "setPanel",
-          panel: state.panel === "settings" ? null : "settings",
+          panel: stateRef.current.panel === "settings" ? null : "settings",
         });
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [state.panel]);
-
-  // Real-time: a nudge sent from the other browser tab (?user=jamie) lands here live.
-  useEffect(() => {
-    const unsubscribe = socialService.subscribeToIncomingNudges((n: RemoteNudge) => {
-      dispatch({ type: "receiveFriendNudge", text: n.text, remoteId: n.id });
-    });
-    return unsubscribe;
   }, []);
+
+  // ---------- InsForge integration (all no-ops when unconfigured) ----------
+  // Detect current session; hydrate from server on sign-in.
+  const authInited = useRef(false);
+  useEffect(() => {
+    if (authInited.current) return;
+    authInited.current = true;
+    let cancelled = false;
+    void (async () => {
+      const { getCurrentUser } = await import("./insforgeAuth");
+      const u = await getCurrentUser();
+      if (cancelled || !u) return;
+      dispatch({ type: "setAccount", userId: u.id, email: u.email });
+      const { hydrateFromServer } = await import("./insforgeHydrate");
+      const h = await hydrateFromServer(u.id);
+      if (cancelled) return;
+      const patch: Partial<TamaState> = {};
+      if (h.profile) {
+        patch.userName = h.profile.userName;
+        patch.petName = h.profile.petName;
+        patch.spriteTint = (h.profile.spriteTint as SpriteTint) ?? "default";
+        if (h.profile.spriteSpecies) patch.spriteSpecies = h.profile.spriteSpecies as SpriteSpecies;
+        if (h.profile.shellTheme) patch.shellTheme = h.profile.shellTheme as ShellTheme;
+        if (h.profile.overlayShape) patch.overlayShape = h.profile.overlayShape as OverlayShape;
+        if (h.profile.overlaySize) patch.overlaySize = h.profile.overlaySize as OverlaySize;
+        // Bond only ever grows — take the max of local and server.
+        if (typeof h.profile.bond === "number") patch.bond = Math.max(state.bond, h.profile.bond);
+        if (h.profile.evolutionStage) patch.evolutionStage = Math.max(state.evolutionStage, h.profile.evolutionStage) as 1 | 2 | 3;
+        patch.onboarded = true;
+      }
+      if (h.wellbeing) patch.wellbeing = h.wellbeing;
+      if (h.consent) patch.consent = h.consent;
+      if (h.memory) patch.memory = h.memory;
+      if (h.positive) patch.positiveMemories = h.positive;
+      if (Object.keys(patch).length) dispatch({ type: "applyServerHydrate", patch });
+
+      const { getPairedFriend } = await import("./insforgeFriends");
+      const friend = await getPairedFriend();
+      if (!cancelled && friend) dispatch({ type: "setPairedFriend", friend });
+
+      const { subscribeNudges } = await import("./nudgeTransport");
+      const unsub = await subscribeNudges(u.id, friend?.id ?? null, (n, via) => {
+        dispatch({ type: "receiveExternalNudge", text: n.text, kind: n.kind, via });
+      });
+      (window as unknown as { __tamaUnsub?: () => void }).__tamaUnsub = unsub;
+    })();
+    return () => {
+      cancelled = true;
+      const w = window as unknown as { __tamaUnsub?: () => void };
+      w.__tamaUnsub?.();
+      w.__tamaUnsub = undefined;
+    };
+  }, []);
+
+  // ---------- Local two-window testing (?as=a / ?as=b), no-op otherwise ----------
+  // BroadcastChannel between two tabs in the same browser profile — lets you
+  // actually pair and exchange nudges/hellos/visits without any backend.
+  const localInited = useRef(false);
+  useEffect(() => {
+    if (localInited.current) return;
+    localInited.current = true;
+    let cancelled = false;
+    void (async () => {
+      const { getLocalSlot, otherSlot, subscribeLocalChannel, announcePresence } =
+        await import("./localTransport");
+      const slot = getLocalSlot();
+      if (!slot || cancelled) return;
+      const unsub = subscribeLocalChannel(slot, {
+        onPresence: (p) => {
+          dispatch({
+            type: "setPairedFriend",
+            friend: {
+              id: otherSlot(slot),
+              userName: p.userName,
+              petName: p.petName,
+              spriteTint: "default",
+            },
+          });
+          // Reply once so a window that loaded (and announced) before this
+          // one also learns who we are — BroadcastChannel doesn't replay.
+          if (!p.ack) {
+            announcePresence(slot, stateRef.current.userName, stateRef.current.petName, true);
+          }
+        },
+        onSignal: (s) => {
+          dispatch({ type: "receiveExternalNudge", text: s.text, kind: s.kind, via: "local" });
+        },
+      });
+      announcePresence(slot, stateRef.current.userName, stateRef.current.petName);
+      (window as unknown as { __tamaLocalUnsub?: () => void }).__tamaLocalUnsub = unsub;
+    })();
+    return () => {
+      cancelled = true;
+      const w = window as unknown as { __tamaLocalUnsub?: () => void };
+      w.__tamaLocalUnsub?.();
+      w.__tamaLocalUnsub = undefined;
+    };
+  }, []);
+
+  // Re-announce presence whenever name/pet change so the other local window's
+  // labels stay current (e.g. right after onboarding completes).
+  useEffect(() => {
+    if (!hydrated.current) return;
+    void (async () => {
+      const { getLocalSlot, announcePresence } = await import("./localTransport");
+      const slot = getLocalSlot();
+      if (slot) announcePresence(slot, state.userName, state.petName);
+    })();
+  }, [state.userName, state.petName]);
+
+  // Debounced sync: fire per-slice when relevant state changes.
+  const syncedOnce = useRef(false);
+  useEffect(() => {
+    if (!state.account.userId) return;
+    void (async () => {
+      const s = await import("./insforgeSync");
+      // Skip the first tick after hydrate to avoid overwriting server with defaults.
+      if (!syncedOnce.current) {
+        syncedOnce.current = true;
+        return;
+      }
+      s.syncProfile(state);
+      s.syncWellbeing(state);
+      s.syncConsent(state);
+      s.syncMemory(state);
+      s.syncPositive(state);
+    })();
+  }, [
+    state.account.userId,
+    state.userName,
+    state.petName,
+    state.spriteTint,
+    state.spriteSpecies,
+    state.shellTheme,
+    state.overlayShape,
+    state.overlaySize,
+    state.wellbeing,
+    state.spriteState,
+    state.consent,
+    state.memory,
+    state.positiveMemories,
+  ]);
+
+  // Hydra memory provider: debounced save of confirmed memories, and
+  // remote wipe whenever memory consent is turned off.
+  const prevMemoryConsent = useRef(state.consent.memoryEnabled);
+  useEffect(() => {
+    if (!hydrated.current) return;
+    const wasOn = prevMemoryConsent.current;
+    prevMemoryConsent.current = state.consent.memoryEnabled;
+
+    // consent flipped off → wipe remote
+    if (wasOn && !state.consent.memoryEnabled) {
+      void (async () => {
+        const { makeHydraProvider } = await import("./hydraMemoryProvider");
+        await makeHydraProvider(state.account.userId).forgetAll();
+      })();
+      return;
+    }
+
+    if (!state.consent.memoryEnabled) return;
+    const t = setTimeout(() => {
+      void (async () => {
+        const { makeHydraProvider } = await import("./hydraMemoryProvider");
+        await makeHydraProvider(state.account.userId).save(state.memory);
+      })();
+    }, 600);
+    return () => clearTimeout(t);
+  }, [state.memory, state.consent.memoryEnabled, state.account.userId]);
 
   const exportMemory = useCallback(() => exportMemoryJSON(state.memory), [state.memory]);
 
-  const sendPetSignal = useCallback(() => {
-    dispatch({ type: "sendPetSignal" });
-    void socialService.sendPetSignal("quiet_spark", "pocket has been a bit quiet.");
-  }, []);
-
-  const sendNudgeToFriend = useCallback(() => {
-    void socialService.sendNudge().then((remote) => {
-      // No second tab / Supabase not configured: fall back to the local self-demo.
-      if (!remote) dispatch({ type: "receiveFriendNudge" });
-    });
-  }, []);
-
-  const markRealCheckin = useCallback(() => {
-    const id = state.friendNudge?.id;
-    dispatch({ type: "markRealCheckin" });
-    if (id && !id.startsWith("nudge_")) void socialService.resolveNudge(id);
-  }, [state.friendNudge]);
-
-  const declineNudge = useCallback(() => {
-    const id = state.friendNudge?.id;
-    dispatch({ type: "declineNudge" });
-    if (id && !id.startsWith("nudge_")) void socialService.resolveNudge(id);
-  }, [state.friendNudge]);
-
-  // Instant local reply first (dispatch below), then upgrade it in place if the
-  // real Claude-backed brain answers before the user moves on. Never blocks.
-  const sendQuickAnswer = useCallback(
-    (key: "A" | "B" | "C", label: string) => {
-      const replyId = `m_${Math.random().toString(36).slice(2, 8)}`;
-      const recentMessages = state.conversation;
-      dispatch({ type: "quickAnswer", key, label, replyId });
-      void callPetBrain({ quickLabel: label, recentMessages }).then((result) => {
-        if (result) dispatch({ type: "applyBrainReply", messageId: replyId, result });
-      });
-    },
-    [state.conversation],
-  );
-
-  const sendSayMore = useCallback(
-    (text: string) => {
-      if (!text.trim()) return;
-      const replyId = `m_${Math.random().toString(36).slice(2, 8)}`;
-      const recentMessages = state.conversation;
-      const quickLabel = state.lastQuick?.label ?? null;
-      dispatch({ type: "sayMore", text, replyId });
-      void callPetBrain({ quickLabel, freeText: text, recentMessages }).then((result) => {
-        if (result) dispatch({ type: "applyBrainReply", messageId: replyId, result });
-      });
-    },
-    [state.conversation, state.lastQuick],
-  );
 
   const value = useMemo(
-    () => ({
-      state,
-      dispatch,
-      exportMemory,
-      sendQuickAnswer,
-      sendSayMore,
-      sendPetSignal,
-      sendNudgeToFriend,
-      markRealCheckin,
-      declineNudge,
-    }),
-    [state, exportMemory, sendQuickAnswer, sendSayMore, sendPetSignal, sendNudgeToFriend, markRealCheckin, declineNudge],
+    () => ({ state, dispatch: wrappedDispatch, exportMemory }),
+    [state, exportMemory, wrappedDispatch],
   );
   return <TamaContext.Provider value={value}>{children}</TamaContext.Provider>;
 }

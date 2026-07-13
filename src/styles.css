@@ -143,13 +143,13 @@
   background:
     repeating-linear-gradient(
       to bottom,
-      color-mix(in oklab, var(--color-lcd) 92%, black 8%) 0 2px,
+      color-mix(in oklab, var(--color-lcd) 96%, black 4%) 0 2px,
       var(--color-lcd) 2px 4px
     );
   box-shadow:
     inset 0 0 0 2px color-mix(in oklab, var(--color-lcd-ink) 40%, transparent),
-    inset 0 8px 24px color-mix(in oklab, var(--color-lcd-ink) 20%, transparent),
-    inset 0 -6px 18px color-mix(in oklab, var(--color-lcd-ink) 25%, transparent);
+    inset 0 8px 24px color-mix(in oklab, var(--color-lcd-ink) 10%, transparent),
+    inset 0 -6px 18px color-mix(in oklab, var(--color-lcd-ink) 12%, transparent);
   color: var(--color-lcd-ink);
   font-family: var(--font-mono-lcd);
   image-rendering: pixelated;
@@ -213,10 +213,77 @@
   0%, 100% { opacity: 0.85; }
   50% { opacity: 1; }
 }
+@keyframes tama-wag {
+  0%, 100% { transform: rotate(-14deg); }
+  50% { transform: rotate(20deg); }
+}
+@keyframes tama-wander {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-6px); }
+  50% { transform: translateX(0); }
+  75% { transform: translateX(7px); }
+}
+.tama-wander { animation: tama-wander 14s ease-in-out infinite; }
 
 @utility animate-tama-fade-in {
   animation: tama-fade-in 300ms ease-out both;
 }
+
+/* ---- Appearance system: shell themes, shape, size ---- */
+/* Themes override --bezel/--bezel-dark and the local charcoal/cream tokens.
+   The LCD screen keeps its own --color-lcd/--color-lcd-ink so ink-on-green
+   contrast is identical across themes. */
+
+.shell-classic {
+  /* current defaults; explicit for clarity */
+  --bezel: oklch(0.78 0.08 320);
+  --bezel-dark: oklch(0.55 0.12 320);
+  --charcoal: oklch(0.22 0.02 280);
+  --cream: oklch(0.96 0.02 85);
+}
+.shell-midnight {
+  --bezel: oklch(0.32 0.02 280);
+  --bezel-dark: oklch(0.18 0.02 280);
+  /* text-charcoal → cream so ink on this shell is readable */
+  --charcoal: oklch(0.96 0.02 85);
+  --cream: oklch(0.26 0.02 280);
+}
+.shell-blossom {
+  --bezel: oklch(0.9 0.07 15);
+  --bezel-dark: oklch(0.72 0.13 15);
+  --charcoal: oklch(0.28 0.03 15);
+  --cream: oklch(0.97 0.02 20);
+}
+.shell-moss {
+  --bezel: oklch(0.78 0.06 150);
+  --bezel-dark: oklch(0.5 0.08 150);
+  --charcoal: oklch(0.22 0.03 150);
+  --cream: oklch(0.95 0.03 120);
+}
+
+/* Overlay shape controls border-radius of the outer bezel and the sprite viewport. */
+.overlay-shape-shell { --shape-outer: 1.5rem; --shape-inner: 1rem; }
+.overlay-shape-round { --shape-outer: 9999px; --shape-inner: 9999px; }
+.overlay-shape-egg   { --shape-outer: 55% 55% 45% 45% / 60% 60% 45% 45%;
+                       --shape-inner: 55% 55% 45% 45% / 60% 60% 45% 45%; }
+
+.overlay-shape-shell > .bezel-shell,
+.overlay-shape-round > .bezel-shell,
+.overlay-shape-egg   > .bezel-shell {
+  border-radius: var(--shape-outer);
+}
+.overlay-shape-shell .lcd-screen,
+.overlay-shape-round .lcd-screen,
+.overlay-shape-egg   .lcd-screen {
+  border-radius: var(--shape-inner);
+}
+
+/* Overlay size: sets a scale used on the in-page overlay wrapper. */
+.overlay-size-s { --overlay-scale: 0.8; }
+.overlay-size-m { --overlay-scale: 1; }
+.overlay-size-l { --overlay-scale: 1.25; }
+
+
 
 @utility scanlines {
   position: relative;
@@ -230,11 +297,17 @@
     background: repeating-linear-gradient(
       to bottom,
       transparent 0 3px,
-      color-mix(in oklab, var(--color-lcd-ink) 10%, transparent) 3px 4px
+      color-mix(in oklab, var(--color-lcd-ink) 5%, transparent) 3px 4px
     );
     mix-blend-mode: multiply;
     border-radius: inherit;
   }
+}
+
+/* LCD input placeholder — full-opacity ink-soft to meet contrast. */
+.tama-lcd-input::placeholder {
+  color: var(--color-lcd-ink-soft);
+  opacity: 1;
 }
 
 @media (prefers-reduced-motion: reduce) {

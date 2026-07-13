@@ -1,0 +1,153 @@
+import { createServerFn } from "@tanstack/react-start";
+import { generateText } from "ai";
+import { z } from "zod";
+import { POCKET_SYSTEM_PROMPT } from "./constants";
+
+const InputSchema = z.object({
+  quickLabel: z.string().nullable().optional(),
+  freeText: z.string().optional(),
+  wellbeing: z.object({
+    rest: z.number(),
+    body: z.number(),
+    spark: z.number(),
+  }),
+  recentMessages: z
+    .array(
+      z.object({
+        from: z.enum(["pocket", "user"]),
+        text: z.string(),
+      }),
+    )
+    .max(10),
+  activeMemories: z
+    .array(
+      z.object({
+        category: z.string(),
+        statement: z.string(),
+        userConfirmed: z.boolean(),
+      }),
+    )
+    .max(30),
+});
+
+export type PocketReplyInput = z.infer<typeof InputSchema>;
+
+const RESPONSE_INSTRUCTION = `Respond ONLY with a single strict JSON object (no prose, no code fences, no commentary) matching exactly this shape:
+
+{
+  "reply": string,                       // 1-2 short sentences, lowercase, pocket's voice
+  "options": [string, string, string],   // three short quick-reply choices, lowercase
+  "inferred": {
+    "restDelta": number,                 // integer between -14 and 12
+    "bodyDelta": number,                 // integer between -12 and 12
+    "sparkDelta": number                 // integer between -14 and 12
+  },
+  "spriteState": "idle" | "perked" | "sleepy" | "low" | "celebrating",
+  "recommendation": "breathe" | "sit" | "water" | "notice" | "sundown" | "friend" | "celebrate" | null,
+  "proposedInferences": [
+    {
+      "category": "rest" | "body" | "spark" | "sleep" | "stress" | "connection" | "positive" | "activity_effect" | "absence" | "preference",
+      "statement": string,
+      "confidence": "low" | "medium" | "high"
+    }
+  ],
+  "needsSupport": boolean,
+  "crisisFlag": boolean
+}
+
+Guidance:
+- Keep reply <= 140 characters, lowercase, in pocket's voice. Never diagnose.
+- Reference remembered facts with hedged language ("i noticed…", "does that fit?") only when relevant. Prefer confirmed memories.
+- Deltas reflect what the message suggests about the user's wellbeing right now. Small unless clear signal.
+- proposedInferences must be new noticings from THIS message only — omit or return [] if nothing is clearly noticed.
+- Set crisisFlag true only for self-harm / immediate-danger language.
+- Treat first-person disclosures of self-injury as crisisFlag=true when intent or an ongoing pattern is implied.`;
+
+export const pocketReply = createServerFn({ method: "POST" })
+  .inputValidator((input: unknown) => InputSchema.parse(input))
+  .handler(async ({ data }) => {
+    const nebiusKey = process.env.NEBIUS_API_KEY;
+    const lovableKey = process.env.LOVABLE_API_KEY;
+    if (!nebiusKey && !lovableKey) {
+      throw new Error("Missing NEBIUS_API_KEY and LOVABLE_API_KEY");
+    }
+
+    const {
+      createLovableAiGatewayProvider,
+      createNebiusProvider,
+    } = await import("@/lib/ai-gateway.server");
+
+    const memoryLines = data.activeMemories
+      .map(
+        (m) =>
+          `- [${m.category}${m.userConfirmed ? " · confirmed" : ""}] ${m.statement}`,
+      )
+      .join("\n") || "(none yet)";
+
+    const convoLines = data.recentMessages
+      .map((m) => `${m.from}: ${m.text}`)
+      .join("\n") || "(new conversation)";
+
+    const userSignal = [
+      data.quickLabel ? `quick reply: "${data.quickLabel}"` : null,
+      data.freeText ? `free text: "${data.freeText}"` : null,
+    ]
+      .filter(Boolean)
+      .join("\n");
+
+    const userPrompt = `Current wellbeing meters (0-100):
+rest=${data.wellbeing.rest} body=${data.wellbeing.body} spark=${data.wellbeing.spark}
+
+Recent conversation (oldest → newest):
+${convoLines}
+
+Active memories about the user:
+${memoryLines}
+
+Newest signal from the user:
+${userSignal || "(no direct message)"}
+
+${RESPONSE_INSTRUCTION}`;
+
+    const extractJson = (text: string) => {
+      let jsonText = text.trim();
+      const fenceMatch = jsonText.match(/```(?:json)?\s*([\s\S]*?)```/);
+      if (fenceMatch) jsonText = fenceMatch[1].trim();
+      const firstBrace = jsonText.indexOf("{");
+      const lastBrace = jsonText.lastIndexOf("}");
+      if (firstBrace >= 0 && lastBrace > firstBrace) {
+        jsonText = jsonText.slice(firstBrace, lastBrace + 1);
+      }
+      return jsonText;
+    };
+
+    // 1) Nebius first
+    if (nebiusKey) {
+      try {
+        const nebius = createNebiusProvider(nebiusKey);
+        const model = nebius("Qwen/Qwen3-30B-A3B-Instruct-2507");
+        const { text } = await generateText({
+          model,
+          system: POCKET_SYSTEM_PROMPT,
+          prompt: userPrompt,
+        });
+        return { raw: extractJson(text), provider: "nebius" as const };
+      } catch (err) {
+        if (typeof console !== "undefined") {
+          console.warn("[pocket-reply] nebius failed, falling back to lovable:", err);
+        }
+        if (!lovableKey) throw err;
+      }
+    }
+
+    // 2) Lovable gateway fallback
+    const gateway = createLovableAiGatewayProvider(lovableKey!);
+    const model = gateway("google/gemini-3-flash-preview");
+    const { text } = await generateText({
+      model,
+      system: POCKET_SYSTEM_PROMPT,
+      prompt: userPrompt,
+    });
+    return { raw: extractJson(text), provider: "lovable" as const };
+  });
+

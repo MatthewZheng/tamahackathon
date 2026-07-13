@@ -2,6 +2,13 @@
 // Real LLM call behind Pocket. The client always has a deterministic local
 // fallback (wellbeingInferenceService.ts) — this function is an enhancement,
 // never a hard dependency, so a flaky venue wifi never blocks the demo.
+//
+// Model backend is tried in order and never throws past this point:
+//   1. Amazon Bedrock via its provider-agnostic Converse API (BEDROCK_API_KEY / AWS_REGION /
+//      BEDROCK_MODEL_ID) — works with any Bedrock-hosted model (Claude, GPT, Grok, etc.),
+//      not just Anthropic's, since Converse normalizes the request/response shape.
+//   2. Direct Anthropic API (ANTHROPIC_API_KEY)
+//   3. Not configured — client falls back to the local instant reply.
 import Anthropic from "npm:@anthropic-ai/sdk@0.32.1";
 
 const corsHeaders = {
@@ -105,42 +112,137 @@ type RequestBody = {
   recentMessages?: { from: "pocket" | "user"; text: string }[];
 };
 
-Deno.serve(async (req) => {
-  if (req.method === "OPTIONS") {
-    return new Response(null, { headers: corsHeaders });
-  }
+function buildPromptText(body: RequestBody): string {
+  const historyLines = (body.recentMessages ?? [])
+    .slice(-6)
+    .map((m) => `${m.from}: ${m.text}`)
+    .join("\n");
+
+  const userTurn = [
+    body.quickLabel ? `user tapped quick-reply: "${body.quickLabel}"` : null,
+    body.freeText ? `user said more: "${body.freeText}"` : null,
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  return [
+    historyLines ? `recent conversation:\n${historyLines}` : null,
+    userTurn || "user opened the app for a check-in with no specific message.",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+// Either a successful structured-JSON text blob, or an explicit model refusal
+// (a real answer, not an infra failure — surfaced to the client as-is, no fallback).
+type ModelInvocation = { ok: true; text: string } | { ok: false; reason: "refusal" };
+
+// Debug-only breadcrumb for the last Bedrock failure reason — surfaced in the
+// "not configured" response so we can diagnose without a log-tailing command.
+let lastBedrockDebug: string | null = null;
+
+// Strips markdown code fences and any leading/trailing chatter a model adds
+// despite instructions, leaving just the JSON object substring.
+function extractJsonText(raw: string): string {
+  let text = raw.trim();
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenced) text = fenced[1].trim();
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start !== -1 && end !== -1 && end > start) text = text.slice(start, end + 1);
+  return text;
+}
+
+const RETURN_REPLY_TOOL = {
+  toolSpec: {
+    name: "return_pocket_reply",
+    description: "Return Pocket's structured reply.",
+    inputSchema: { json: RESPONSE_SCHEMA },
+  },
+};
+
+function converseRequest(
+  apiKey: string,
+  region: string,
+  modelId: string,
+  promptText: string,
+  useTool: boolean,
+): Promise<Response> {
+  const url = `https://bedrock-runtime.${region}.amazonaws.com/model/${encodeURIComponent(modelId)}/converse`;
+  return fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "content-type": "application/json",
+      accept: "application/json",
+    },
+    body: JSON.stringify({
+      messages: [{ role: "user", content: [{ text: promptText }] }],
+      system: [{ text: POCKET_SYSTEM_PROMPT }],
+      inferenceConfig: { maxTokens: 1024 },
+      ...(useTool
+        ? { toolConfig: { tools: [RETURN_REPLY_TOOL], toolChoice: { tool: { name: "return_pocket_reply" } } } }
+        : {}),
+    }),
+  });
+}
+
+// Returns null when this backend isn't configured, or failed for any infra
+// reason (network, auth, malformed response) — callers treat null as "try
+// the next backend," never as a thrown error. Works with any Bedrock-hosted
+// model via the provider-agnostic Converse API — Claude, GPT, Grok, etc.
+async function callBedrock(promptText: string): Promise<ModelInvocation | null> {
+  const apiKey = Deno.env.get("BEDROCK_API_KEY");
+  const region = Deno.env.get("AWS_REGION");
+  const modelId = Deno.env.get("BEDROCK_MODEL_ID");
+
+  if (!apiKey || !region || !modelId) return null;
 
   try {
-    const apiKey = Deno.env.get("ANTHROPIC_API_KEY");
-    if (!apiKey) {
-      return new Response(JSON.stringify({ error: "ANTHROPIC_API_KEY not configured" }), {
-        status: 500,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+    // Preferred path: force a structured tool call so we get parsed JSON directly.
+    let res = await converseRequest(apiKey, region, modelId, promptText, true);
+    let usedTool = true;
+
+    if (!res.ok) {
+      // Some models on Bedrock don't support toolConfig — retry as plain JSON-in-prompt.
+      const firstErr = await res.text();
+      res = await converseRequest(apiKey, region, modelId, promptText, false);
+      usedTool = false;
+      if (!res.ok) {
+        lastBedrockDebug = `bedrock converse failed (with tool): ${firstErr}; (without tool): ${await res.text()}`;
+        console.error(lastBedrockDebug);
+        return null;
+      }
     }
 
-    const body = (await req.json()) as RequestBody;
+    const json = await res.json();
+    if (json.stopReason === "content_filtered") return { ok: false, reason: "refusal" };
+
+    const content = json.output?.message?.content ?? [];
+    if (usedTool) {
+      const toolUse = content.find((b: { toolUse?: { input?: unknown } }) => b.toolUse)?.toolUse;
+      if (toolUse?.input) return { ok: true, text: JSON.stringify(toolUse.input) };
+    }
+    const textBlock = content.find((b: { text?: string }) => typeof b.text === "string");
+    if (!textBlock?.text) {
+      lastBedrockDebug = `bedrock converse response had no usable content: ${JSON.stringify(json)}`;
+      console.error(lastBedrockDebug);
+      return null;
+    }
+    return { ok: true, text: extractJsonText(textBlock.text) };
+  } catch (error) {
+    lastBedrockDebug = `bedrock call threw: ${String(error)}`;
+    console.error(lastBedrockDebug);
+    return null;
+  }
+}
+
+async function callAnthropicDirect(promptText: string): Promise<ModelInvocation | null> {
+  const apiKey = Deno.env.get("ANTHROPIC_API_KEY");
+  if (!apiKey) return null;
+
+  try {
     const client = new Anthropic({ apiKey });
-
-    const historyLines = (body.recentMessages ?? [])
-      .slice(-6)
-      .map((m) => `${m.from}: ${m.text}`)
-      .join("\n");
-
-    const userTurn = [
-      body.quickLabel ? `user tapped quick-reply: "${body.quickLabel}"` : null,
-      body.freeText ? `user said more: "${body.freeText}"` : null,
-    ]
-      .filter(Boolean)
-      .join("\n");
-
-    const promptText = [
-      historyLines ? `recent conversation:\n${historyLines}` : null,
-      userTurn || "user opened the app for a check-in with no specific message.",
-    ]
-      .filter(Boolean)
-      .join("\n\n");
-
     const response = await client.messages.create({
       model: "claude-opus-4-8",
       max_tokens: 1024,
@@ -149,19 +251,55 @@ Deno.serve(async (req) => {
       messages: [{ role: "user", content: promptText }],
     });
 
-    if (response.stop_reason === "refusal") {
-      return new Response(JSON.stringify({ error: "refusal" }), {
+    if (response.stop_reason === "refusal") return { ok: false, reason: "refusal" };
+
+    const textBlock = response.content.find((b): b is Anthropic.TextBlock => b.type === "text");
+    if (!textBlock) {
+      console.error("anthropic response had no text block");
+      return null;
+    }
+    return { ok: true, text: textBlock.text };
+  } catch (error) {
+    console.error("anthropic call threw", error);
+    return null;
+  }
+}
+
+Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") {
+    return new Response(null, { headers: corsHeaders });
+  }
+
+  try {
+    const body = (await req.json()) as RequestBody;
+    const promptText = buildPromptText(body);
+
+    const result = (await callBedrock(promptText)) ?? (await callAnthropicDirect(promptText));
+
+    if (!result) {
+      return new Response(
+        JSON.stringify({
+          error: "no model backend configured (set BEDROCK_API_KEY/AWS_REGION/BEDROCK_MODEL_ID, or ANTHROPIC_API_KEY)",
+          debug: {
+            hasBedrockApiKey: Boolean(Deno.env.get("BEDROCK_API_KEY")),
+            hasAwsRegion: Boolean(Deno.env.get("AWS_REGION")),
+            hasBedrockModelId: Boolean(Deno.env.get("BEDROCK_MODEL_ID")),
+            hasAnthropicApiKey: Boolean(Deno.env.get("ANTHROPIC_API_KEY")),
+            lastBedrockDebug,
+          },
+        }),
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
+    if (!result.ok) {
+      return new Response(JSON.stringify({ error: result.reason }), {
         status: 200,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
-    const textBlock = response.content.find((b): b is Anthropic.TextBlock => b.type === "text");
-    if (!textBlock) {
-      throw new Error("No text block in model response");
-    }
-
-    const parsed = JSON.parse(textBlock.text);
+    const parsed = JSON.parse(extractJsonText(result.text));
     return new Response(JSON.stringify(parsed), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });

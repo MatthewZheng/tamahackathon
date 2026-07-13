@@ -95,6 +95,20 @@ export type FriendNudge = {
   text: string;
   at: string;
   resolved: boolean;
+  kind?: "nudge" | "hello";
+};
+
+export type VisitState = {
+  direction: "incoming" | "outgoing";
+  at: string;
+};
+
+export type YardLogEntry = {
+  id: string;
+  from: "me" | "friend";
+  kind: "nudge" | "hello";
+  text: string;
+  at: string;
 };
 
 export type ConsentSettings = {

@@ -24,7 +24,7 @@ export function Meters() {
     <div className="rounded-2xl border border-charcoal/10 bg-cream/80 p-4 shadow-sm backdrop-blur">
       <div className="mb-3 flex items-baseline justify-between">
         <h3 className="text-sm font-semibold tracking-wide text-charcoal">
-          pocket's best guess
+          {state.petName.toLowerCase()}'s best guess
         </h3>
         <span className="text-[10px] italic text-charcoal/50">i may be reading this wrong</span>
       </div>

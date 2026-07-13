@@ -1,97 +1,98 @@
-import { PocketSprite } from "./PocketSprite";
 import { useTama } from "@/lib/tama/store";
+import { LCDScene } from "./LCDScene";
+import { YardScene } from "./YardScene";
 
-const KEY_LABELS: Array<{ k: "A" | "B" | "C" }> = [{ k: "A" }, { k: "B" }, { k: "C" }];
-
+// The big centered handheld device. LCDScene lives inside the screen.
+// A/B/C physical buttons still work as an accessibility fallback and tactile feel.
 export function RetroDevice() {
-  const { state, dispatch, sendQuickAnswer } = useTama();
-  const { currentPrompt, spriteState, consent } = state;
-
-  const lastPocket = [...state.conversation].reverse().find((m) => m.from === "pocket");
-  const displayMessage = lastPocket?.text ?? currentPrompt.question;
+  const { state, dispatch } = useTama();
+  const { currentPrompt } = state;
+  const pet = state.petName.toLowerCase();
+  const hasUnseenSocial = Boolean(
+    (state.friendNudge && !state.friendNudge.resolved) || state.visiting,
+  );
 
   return (
-    <div className="bezel-shell relative mx-auto w-full max-w-md rounded-[42px] p-6 pb-8">
-      {/* Top gold trim */}
-      <div className="mb-3 flex items-center justify-between px-2">
+    <div
+      className={`shell-${state.shellTheme} bezel-shell relative mx-auto rounded-[42px] p-4 pb-5 lg:p-5 lg:pb-6`}
+      style={{
+        // Desktop: size by viewport height so LCD lands ~65-70dvh. Mobile: near edge-to-edge.
+        width: "min(94vw, calc((100dvh - 11rem) * 1.15))",
+        maxWidth: "min(94vw, 720px)",
+      }}
+    >
+      {/* Top trim */}
+      <div className="mb-2 flex items-center justify-between px-2">
         <div className="flex items-center gap-1.5">
-          <span className="h-2 w-2 rounded-full bg-lime shadow-[0_0_6px_var(--color-lime)]" />
-          <span className="text-xs font-medium tracking-[0.2em] text-charcoal/60">TAMA</span>
+          <span
+            className={`h-2 w-2 rounded-full ${
+              state.thinking ? "bg-orchid animate-pulse" : "bg-lime"
+            } shadow-[0_0_6px_currentColor]`}
+          />
+          <span className="text-[11px] font-medium tracking-[0.24em] text-charcoal">GOTCHU</span>
         </div>
-        <span className="font-mono text-[10px] tracking-widest text-charcoal/50">
-          v0.1 · POCKET
-        </span>
-      </div>
-
-      {/* LCD screen */}
-      <div className="lcd-screen scanlines relative aspect-[4/3] w-full overflow-hidden rounded-2xl scanlines-after">
-        <div className="absolute inset-0 pixel-grid opacity-30" />
-
-        {/* Room floor */}
-        <div className="absolute inset-x-4 bottom-8 h-[2px] bg-current opacity-40" />
-        {/* Sun/moon */}
-        <div className="absolute right-4 top-3 h-3 w-3 rounded-full border-2 border-current opacity-60" />
-
-        {/* Sprite */}
-        <div className="absolute inset-x-0 bottom-9 flex justify-center">
-          <PocketSprite state={spriteState} size={112} reducedMotion={consent.reducedMotion} />
-        </div>
-
-        {/* Message balloon */}
-        <div className="absolute inset-x-3 top-3 rounded-lg border-2 border-current/70 bg-lcd-dim/40 px-3 py-2">
-          <p className="text-lg leading-tight" style={{ fontFamily: "var(--font-mono-lcd)" }}>
-            {displayMessage}
-          </p>
-        </div>
-
-        {/* Status glyphs */}
-        <div className="absolute bottom-1.5 left-3 flex gap-2 text-[10px] uppercase tracking-widest opacity-70">
-          <span>rest</span>
-          <span>·</span>
-          <span>body</span>
-          <span>·</span>
-          <span>spark</span>
-        </div>
-      </div>
-
-      {/* Options row */}
-      <div className="mt-4 grid grid-cols-3 gap-2 px-1 text-center">
-        {currentPrompt.options.map((opt, i) => (
-          <div
-            key={i}
-            className="rounded-lg border border-charcoal/10 bg-cream/70 px-2 py-1.5 text-xs font-medium text-charcoal/80"
-          >
-            {opt}
-          </div>
-        ))}
-      </div>
-
-      {/* Buttons */}
-      <div className="mt-3 grid grid-cols-3 gap-3">
-        {KEY_LABELS.map(({ k }, i) => (
+        <div className="flex items-center gap-2">
+          <span className="font-mono text-[10px] tracking-widest text-charcoal">
+            v0.1 · {pet.toUpperCase()}
+          </span>
           <button
-            key={k}
-            onClick={() => sendQuickAnswer(k, currentPrompt.options[i])}
-            className="physical-button active:physical-button-pressed group flex h-14 items-center justify-center rounded-full font-bold text-charcoal/80"
-            aria-label={`Answer ${k}: ${currentPrompt.options[i]}`}
+            onClick={() =>
+              dispatch({
+                type: "setScreenView",
+                view: state.screenView === "yard" ? "chat" : "yard",
+              })
+            }
+            className="relative rounded-full border border-charcoal/20 bg-cream/70 px-2 py-0.5 text-[10px] uppercase tracking-widest text-charcoal hover:bg-cream"
+            aria-label={state.screenView === "yard" ? "back to pocket" : "open the yard"}
           >
-            <span className="text-xl">{k}</span>
+            {state.screenView === "yard" ? "◂ pocket" : "yard"}
+            {hasUnseenSocial && state.screenView !== "yard" && (
+              <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-orchid shadow-[0_0_4px_currentColor]" />
+            )}
           </button>
-        ))}
+        </div>
       </div>
 
-      {/* Small "next question" link */}
-      <div className="mt-3 flex items-center justify-between px-1 text-xs text-charcoal/60">
-        <button
-          onClick={() => dispatch({ type: "advancePrompt" })}
-          className="rounded-md px-2 py-1 hover:bg-charcoal/5"
-        >
-          new question
-        </button>
-        <span className="font-mono text-[10px]">
-          {state.spriteState}
-        </span>
-      </div>
+      {/* LCD */}
+      {state.screenView === "yard" ? <YardScene /> : <LCDScene />}
+
+      {/* Physical A/B/C buttons — 56px min, full-contrast labels */}
+      {state.screenView === "chat" && (
+        <div className="mt-4 grid grid-cols-3 gap-3">
+          {(["A", "B", "C"] as const).map((k, i) => (
+            <div key={k} className="flex flex-col items-center gap-1">
+              <button
+                disabled={state.thinking}
+                onClick={() =>
+                  dispatch({
+                    type: "quickAnswer",
+                    key: k,
+                    label: currentPrompt.options[i],
+                  })
+                }
+                className="physical-button active:physical-button-pressed active:translate-y-[1px] flex items-center justify-center rounded-full font-bold text-charcoal disabled:cursor-not-allowed disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2"
+                style={{
+                  minHeight: 56,
+                  minWidth: 56,
+                  height: 56,
+                  width: 56,
+                  // ring color matches charcoal (bezel-facing)
+                  outlineColor: "var(--charcoal)",
+                }}
+                aria-label={`Answer ${k}: ${currentPrompt.options[i]}`}
+              >
+                <span className="text-lg">{k}</span>
+              </button>
+              <span
+                className="max-w-[10rem] truncate text-[11px] text-charcoal"
+                title={currentPrompt.options[i]}
+              >
+                {currentPrompt.options[i]}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

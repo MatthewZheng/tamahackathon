@@ -17,7 +17,14 @@ export function ActivityOverlay() {
 }
 
 function ActivityFeedback() {
-  const { dispatch } = useTama();
+  const { state, dispatch } = useTama();
+  const swap = () => {
+    const options: Array<"breathe" | "sit" | "water"> = ["breathe", "sit", "water"];
+    const next = options.find((a) => a !== state.activity) ?? "sit";
+    // Record the outcome as "other" without closing, then reopen a different activity.
+    dispatch({ type: "activityFeedback", feedback: "other" });
+    setTimeout(() => dispatch({ type: "openActivity", activity: next }), 0);
+  };
   return (
     <div className="mt-4 flex flex-wrap justify-center gap-2">
       <button
@@ -33,7 +40,7 @@ function ActivityFeedback() {
         not really
       </button>
       <button
-        onClick={() => dispatch({ type: "activityFeedback", feedback: "other" })}
+        onClick={swap}
         className="rounded-full border border-charcoal/15 px-4 py-2 text-sm"
       >
         try something else
@@ -42,11 +49,13 @@ function ActivityFeedback() {
   );
 }
 
+
 function BreathingWithPocket() {
   const { state, dispatch } = useTama();
   const [phase, setPhase] = useState<"idle" | "in" | "hold" | "out" | "done">("idle");
   const [running, setRunning] = useState(false);
   const [demo, setDemo] = useState(false);
+  const demoRef = useRef(false);
   const timerRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -58,18 +67,21 @@ function BreathingWithPocket() {
   const step = (next: "in" | "hold" | "out" | "done", ms: number) => {
     timerRef.current = window.setTimeout(() => {
       setPhase(next);
-      if (next === "in") step("hold", demo ? 1400 : 4000);
-      else if (next === "hold") step("out", demo ? 2200 : 7000);
-      else if (next === "out") step("done", demo ? 2400 : 8000);
+      const isDemo = demoRef.current;
+      if (next === "in") step("hold", isDemo ? 1400 : 4000);
+      else if (next === "hold") step("out", isDemo ? 2200 : 7000);
+      else if (next === "out") step("done", isDemo ? 2400 : 8000);
     }, ms);
   };
 
   const start = (demoMode = false) => {
+    demoRef.current = demoMode;
     setDemo(demoMode);
     setRunning(true);
     setPhase("in");
     step("hold", demoMode ? 1400 : 4000);
   };
+
 
   const pause = () => {
     if (timerRef.current) window.clearTimeout(timerRef.current);
@@ -77,6 +89,7 @@ function BreathingWithPocket() {
     setPhase("idle");
   };
 
+  const pet = state.petName.toLowerCase();
   const label =
     phase === "in"
       ? "breathe in…"
@@ -86,13 +99,13 @@ function BreathingWithPocket() {
           ? "breathe out…"
           : phase === "done"
             ? "the room got a little quieter."
-            : "breathing with pocket";
+            : `breathing with ${pet}`;
 
   const scale = phase === "in" ? 1.35 : phase === "hold" ? 1.35 : phase === "out" ? 0.9 : 1;
 
   return (
     <div className="text-center">
-      <h3 className="mb-1 text-lg font-semibold text-charcoal">breathing with pocket</h3>
+      <h3 className="mb-1 text-lg font-semibold text-charcoal">breathing with {pet}</h3>
       <p className="mb-4 text-sm text-charcoal/60">4 · 7 · 8 · one gentle cycle</p>
       <div
         className="lcd-screen scanlines scanlines-after mx-auto flex aspect-square w-56 items-center justify-center overflow-hidden rounded-2xl"
@@ -188,7 +201,7 @@ function SitStillWithPocket() {
 
   return (
     <div className="text-center">
-      <h3 className="mb-1 text-lg font-semibold text-charcoal">sit still with pocket</h3>
+      <h3 className="mb-1 text-lg font-semibold text-charcoal">sit still with {state.petName.toLowerCase()}</h3>
       <p className="mb-4 text-sm text-charcoal/60">no score. no streak.</p>
       <div className="lcd-screen scanlines scanlines-after mx-auto flex aspect-square w-56 items-center justify-center overflow-hidden rounded-2xl" style={{ filter: running ? "brightness(0.85)" : "none" }}>
         <PocketSprite state="sleepy" size={120} reducedMotion={state.consent.reducedMotion} />
@@ -230,7 +243,7 @@ function WaterWithPocket() {
   return (
     <div className="text-center">
       <h3 className="mb-1 text-lg font-semibold text-charcoal">one small thing</h3>
-      <p className="mb-4 text-sm text-charcoal/60">pocket only drinks what you drink.</p>
+      <p className="mb-4 text-sm text-charcoal/60">{state.petName.toLowerCase()} only drinks what you drink.</p>
       <div className="lcd-screen scanlines scanlines-after mx-auto flex aspect-square w-56 items-center justify-center overflow-hidden rounded-2xl">
         <PocketSprite
           state={stage === "drinking" ? "perked" : stage === "done" ? "celebrating" : "idle"}
@@ -261,7 +274,13 @@ function WaterWithPocket() {
           )}
           {stage === "drinking" && (
             <button
-              onClick={() => setStage("done")}
+              onClick={() => {
+                dispatch({
+                  type: "setMeters",
+                  wellbeing: { body: Math.min(100, state.wellbeing.body + 6) },
+                });
+                setStage("done");
+              }}
               className="rounded-full bg-orchid px-4 py-2 text-sm font-medium text-cream"
             >
               we drank

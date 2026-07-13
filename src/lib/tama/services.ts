@@ -35,17 +35,22 @@ export const localMemoryProvider: MemoryProvider = {
     return [];
   },
 };
-// Future: cogneeMemoryProvider, hydraMemoryProvider
+// Hydra provider lives in ./hydraMemoryProvider — imported lazily by the store.
 
 // -------------------- Pet signal service (BAND future) --------------
 // Simulated pet-to-pet signal. Documents where BAND could later provide
 // governed agent-to-agent communication.
+export type SignalKind = "nudge" | "hello" | "visit" | "leave";
+
 export const petSignalService = {
-  buildSignal(reason: "quiet_spark" | "return_after_absence"): PetSignal {
+  buildSignal(kind: SignalKind, petName = "pocket"): PetSignal {
+    const p = petName.toLowerCase();
     const text =
-      reason === "quiet_spark"
-        ? "pocket has been a bit quiet."
-        : "pocket is glad sam is back.";
+      kind === "hello"
+        ? `${p} waved hello.`
+        : kind === "visit"
+          ? `${p} headed over to visit.`
+          : `${p} has been a bit quiet.`;
     return {
       id: `sig_${Math.random().toString(36).slice(2, 8)}`,
       text,
@@ -53,9 +58,12 @@ export const petSignalService = {
       active: true,
     };
   },
-  translateForFriend(_signal: PetSignal, sam = "sam") {
-    // Friend only ever sees a minimal generic nudge — never private data.
-    return `${sam}'s been a bit quiet. maybe say hi?`;
+  translateForFriend(kind: SignalKind, userName = "sam") {
+    const u = userName.toLowerCase();
+    if (kind === "hello") return `${u}'s pocket says hi 👋`;
+    if (kind === "visit") return `${u}'s pocket is coming over to the yard.`;
+    if (kind === "leave") return `${u}'s pocket headed home.`;
+    return `${u}'s been a bit quiet. maybe say hi?`;
   },
 };
 

@@ -1,26 +1,54 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useTama } from "@/lib/tama/store";
+import type { RelationEdge } from "@/lib/tama/hydra.functions";
 
 export function MemoryPanel({ onClose }: { onClose: () => void }) {
   const { state, dispatch, exportMemory } = useTama();
   const active = state.memory.filter((m) => m.isActive);
+  const [showConnections, setShowConnections] = useState(false);
+  const [edges, setEdges] = useState<RelationEdge[] | null>(null);
+  const [loadingEdges, setLoadingEdges] = useState(false);
+
+  useEffect(() => {
+    if (!showConnections) return;
+    setLoadingEdges(true);
+    void (async () => {
+      const { makeHydraProvider, isHydraConfigured } = await import(
+        "@/lib/tama/hydraMemoryProvider"
+      );
+      if (!(await isHydraConfigured())) {
+        setEdges([]);
+        setLoadingEdges(false);
+        return;
+      }
+      const provider = makeHydraProvider(state.account.userId);
+      setEdges(await provider.getRelations());
+      setLoadingEdges(false);
+    })();
+  }, [showConnections, state.account.userId, state.memory.length]);
+
 
   const doExport = () => {
     const blob = new Blob([exportMemory()], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = "pocket-memory.json";
+    a.download = `${state.petName.toLowerCase()}-memory.json`;
     a.click();
     URL.revokeObjectURL(url);
   };
 
+  const pet = state.petName.toLowerCase();
+
   return (
     <PanelShell
-      title="what pocket noticed"
-      subtitle="pocket's memory belongs to you."
+      title={`what ${pet} noticed`}
+      subtitle={`${pet}'s memory belongs to you.`}
       onClose={onClose}
     >
+      <p className="mb-3 rounded-lg border border-lavender/40 bg-lavender/15 px-3 py-2 text-[12px] italic text-charcoal/70">
+        {pet} grows from what you share and confirm — never from showing up on a schedule.
+      </p>
       <div className="mb-3 flex flex-wrap gap-2">
         <button
           onClick={() => dispatch({ type: "toggleConsent", key: "memoryEnabled" })}
@@ -40,25 +68,65 @@ export function MemoryPanel({ onClose }: { onClose: () => void }) {
         </button>
         <button
           onClick={() => {
-            if (confirm("delete every inference pocket has stored?")) dispatch({ type: "wipeMemory" });
+            if (confirm(`delete every inference ${pet} has stored?`)) dispatch({ type: "wipeMemory" });
           }}
           className="rounded-full border border-destructive/30 bg-destructive/5 px-3 py-1 text-xs text-destructive"
         >
           delete all
         </button>
+        <button
+          onClick={() => setShowConnections((v) => !v)}
+          className={`rounded-full border px-3 py-1 text-xs ${
+            showConnections
+              ? "border-orchid/40 bg-orchid/10 text-orchid"
+              : "border-charcoal/15 bg-white/60 text-charcoal/70"
+          }`}
+          title="read-only view of how noticings relate"
+        >
+          connections: {showConnections ? "on" : "off"}
+        </button>
       </div>
 
-      {active.length === 0 && (
-        <p className="rounded-xl border border-dashed border-charcoal/15 p-4 text-sm text-charcoal/60">
-          nothing yet. pocket is listening lightly.
-        </p>
+      {showConnections ? (
+        <div className="space-y-1.5 rounded-xl border border-charcoal/10 bg-white/60 p-3 text-xs">
+          <p className="mb-1 text-[11px] uppercase tracking-wider text-charcoal/50">
+            how {pet}'s noticings connect
+          </p>
+          {loadingEdges && <p className="text-charcoal/50">loading…</p>}
+          {!loadingEdges && edges && edges.length === 0 && (
+            <p className="text-charcoal/50">
+              no connections yet — {pet} needs a few more confirmed noticings.
+            </p>
+          )}
+          {!loadingEdges &&
+            edges?.map((e, i) => (
+              <div key={i} className="flex flex-wrap items-center gap-1.5">
+                <span className="rounded-full bg-lavender/40 px-2 py-0.5 text-charcoal">
+                  {e.source}
+                </span>
+                <span className="text-charcoal/50">— {e.predicate} →</span>
+                <span className="rounded-full bg-lime/40 px-2 py-0.5 text-charcoal">
+                  {e.target}
+                </span>
+              </div>
+            ))}
+        </div>
+      ) : (
+        <>
+          {active.length === 0 && (
+            <p className="rounded-xl border border-dashed border-charcoal/15 p-4 text-sm text-charcoal/60">
+              nothing yet. {pet} is listening lightly.
+            </p>
+          )}
+
+          <div className="space-y-2">
+            {active.map((inf) => (
+              <InferenceCard key={inf.id} id={inf.id} />
+            ))}
+          </div>
+        </>
       )}
 
-      <div className="space-y-2">
-        {active.map((inf) => (
-          <InferenceCard key={inf.id} id={inf.id} />
-        ))}
-      </div>
     </PanelShell>
   );
 }

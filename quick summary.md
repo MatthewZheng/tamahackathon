@@ -2,4 +2,4 @@
 - [x] There should be more features than just nudge. Put nudge on the tama
 - [x] someone showed up outside the screen. is not good enough, show them visiting each other (one thing appears on the others screen)
 - [x] After visiting, the pet should go back to its original position through a new option in the drop down menu called "go home"
-- [ ] Change the name from "TAMA" on the frame to "GOTCHU" Port this design over to electron and make the frame transparent and overlayed over other desktop windows. Allow it to be resized easily.
+- [x] Change the name from "TAMA" on the frame to "GOTCHU" Port this design over to electron and make the frame transparent and overlayed over other desktop windows. Allow it to be resized easily.

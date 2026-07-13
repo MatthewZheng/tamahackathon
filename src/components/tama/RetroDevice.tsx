@@ -1,6 +1,7 @@
 import { useTama } from "@/lib/tama/store";
 import { LCDScene } from "./LCDScene";
 import { YardScene } from "./YardScene";
+import { isElectronOverlay } from "@/lib/tama/electronDetect";
 
 // The big centered handheld device. LCDScene lives inside the screen.
 // A/B/C physical buttons still work as an accessibility fallback and tactile feel.
@@ -11,14 +12,17 @@ export function RetroDevice() {
   const hasUnseenSocial = Boolean(
     (state.friendNudge && !state.friendNudge.resolved) || state.visiting,
   );
+  const overlay = isElectronOverlay();
 
   return (
     <div
       className={`shell-${state.shellTheme} bezel-shell relative mx-auto rounded-[42px] p-4 pb-5 lg:p-5 lg:pb-6`}
       style={{
-        // Desktop: size by viewport height so LCD lands ~65-70dvh. Mobile: near edge-to-edge.
-        width: "min(94vw, calc((100dvh - 11rem) * 1.15))",
-        maxWidth: "min(94vw, 720px)",
+        // Electron overlay: fill the (freely resizable) window directly —
+        // there's no header/footer to leave room for. Browser tab: size by
+        // viewport height so LCD lands ~65-70dvh, near edge-to-edge on mobile.
+        width: overlay ? "min(96vw, 96dvh)" : "min(94vw, calc((100dvh - 11rem) * 1.15))",
+        maxWidth: overlay ? undefined : "min(94vw, 720px)",
       }}
     >
       {/* Top trim */}
@@ -50,6 +54,34 @@ export function RetroDevice() {
               <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-orchid shadow-[0_0_4px_currentColor]" />
             )}
           </button>
+          {overlay && (
+            <>
+              <button
+                onClick={() => dispatch({ type: "setPanel", panel: "memory" })}
+                className="rounded-full border border-charcoal/20 bg-cream/70 px-1.5 py-0.5 text-[10px] text-charcoal hover:bg-cream"
+                aria-label={`what ${pet} noticed`}
+                title={`what ${pet} noticed`}
+              >
+                🧠
+              </button>
+              <button
+                onClick={() => dispatch({ type: "setPanel", panel: "settings" })}
+                className="rounded-full border border-charcoal/20 bg-cream/70 px-1.5 py-0.5 text-[10px] text-charcoal hover:bg-cream"
+                aria-label="settings"
+                title="settings"
+              >
+                ⚙
+              </button>
+              <button
+                onClick={() => window.close()}
+                className="rounded-full border border-charcoal/20 bg-cream/70 px-1.5 py-0.5 text-[10px] text-charcoal hover:bg-cream"
+                aria-label="close"
+                title="close"
+              >
+                ×
+              </button>
+            </>
+          )}
         </div>
       </div>
 

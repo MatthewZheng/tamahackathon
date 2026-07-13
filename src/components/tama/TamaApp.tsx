@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { useTama } from "@/lib/tama/store";
 import { TamaProvider } from "@/lib/tama/store";
 import { RetroDevice } from "./RetroDevice";
@@ -8,6 +9,7 @@ import { CrisisHandoff } from "./CrisisHandoff";
 import { FloatingOverlay } from "./FloatingOverlay";
 import { TamaErrorBoundary } from "./TamaErrorBoundary";
 import { Onboarding } from "./Onboarding";
+import { isElectronOverlay } from "@/lib/tama/electronDetect";
 
 export function TamaApp() {
   return (
@@ -22,45 +24,59 @@ export function TamaApp() {
 function TamaScreen() {
   const { state, dispatch } = useTama();
   const pet = state.petName.toLowerCase();
+  const overlay = isElectronOverlay();
+
+  // Only the Electron overlay shell gets a transparent page background —
+  // normal browser usage keeps the usual cream/gradient page.
+  useEffect(() => {
+    document.body.classList.toggle("tama-electron-overlay", overlay);
+  }, [overlay]);
 
   return (
     <main className="relative min-h-[100dvh] w-full overflow-x-hidden">
-      <header className="mx-auto flex max-w-4xl items-center justify-between px-5 py-2">
-        <div className="flex items-baseline gap-2">
-          <p className="text-sm font-semibold tracking-tight text-charcoal">tama</p>
-          <p className="text-[10px] text-charcoal">
-            a companion that notices, not a therapist that diagnoses
-          </p>
-        </div>
-        <nav className="flex items-center gap-1.5 text-sm">
-          <NavBtn onClick={() => dispatch({ type: "setPanel", panel: "memory" })}>
-            what {pet} noticed
-          </NavBtn>
-          <NavBtn onClick={() => dispatch({ type: "setPanel", panel: "settings" })}>settings</NavBtn>
-        </nav>
-      </header>
+      {!overlay && (
+        <header className="mx-auto flex max-w-4xl items-center justify-between px-5 py-2">
+          <div className="flex items-baseline gap-2">
+            <p className="text-sm font-semibold tracking-tight text-charcoal">tama</p>
+            <p className="text-[10px] text-charcoal">
+              a companion that notices, not a therapist that diagnoses
+            </p>
+          </div>
+          <nav className="flex items-center gap-1.5 text-sm">
+            <NavBtn onClick={() => dispatch({ type: "setPanel", panel: "memory" })}>
+              what {pet} noticed
+            </NavBtn>
+            <NavBtn onClick={() => dispatch({ type: "setPanel", panel: "settings" })}>
+              settings
+            </NavBtn>
+          </nav>
+        </header>
+      )}
 
       <div className="mx-auto flex w-full flex-col items-center gap-2 px-3 pb-8 pt-1">
         <RetroDevice />
 
-        <p className="max-w-md text-center text-[11px] italic text-charcoal">
-          you care for {pet}. {pet} notices you, remembers what helps, and cares for you too.
-        </p>
-
-
-        {state.returnFlowActive && (
-          <div className="w-full max-w-md rounded-2xl border border-lavender/50 bg-lavender/20 p-4 text-sm text-charcoal">
-            <p className="font-semibold">welcome back.</p>
-            <p className="mt-1 italic text-charcoal/80">
-              no catching up required. nothing broke while you were gone.
+        {!overlay && (
+          <>
+            <p className="max-w-md text-center text-[11px] italic text-charcoal">
+              you care for {pet}. {pet} notices you, remembers what helps, and cares for you too.
             </p>
-          </div>
-        )}
 
-        <RecommendationCard />
+            {state.returnFlowActive && (
+              <div className="w-full max-w-md rounded-2xl border border-lavender/50 bg-lavender/20 p-4 text-sm text-charcoal">
+                <p className="font-semibold">welcome back.</p>
+                <p className="mt-1 italic text-charcoal/80">
+                  no catching up required. nothing broke while you were gone.
+                </p>
+              </div>
+            )}
+
+            <RecommendationCard />
+          </>
+        )}
       </div>
 
-      <FloatingOverlay />
+      {!overlay && <FloatingOverlay />}
       <ActivityOverlay />
       {state.panel === "memory" && (
         <MemoryPanel onClose={() => dispatch({ type: "setPanel", panel: null })} />

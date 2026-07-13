@@ -136,6 +136,26 @@
     font-family: var(--font-display);
     -webkit-font-smoothing: antialiased;
   }
+  /* Electron overlay shell (electron/main.js) — see electronDetect.ts.
+     Page background must fall away entirely so only the device is visible
+     against the desktop. */
+  body.tama-electron-overlay {
+    background: transparent;
+  }
+}
+
+/* Electron overlay dragging — a no-op outside an app-shell context (Electron,
+   or a browser PWA's declared titlebar area), so safe to ship unconditionally.
+   The bezel drags the window; anything interactive inside stays clickable. */
+.bezel-shell {
+  -webkit-app-region: drag;
+}
+.bezel-shell button,
+.bezel-shell input,
+.bezel-shell textarea,
+.bezel-shell [role="menu"],
+.bezel-shell [role="menuitem"] {
+  -webkit-app-region: no-drag;
 }
 
 /* LCD screen texture */
